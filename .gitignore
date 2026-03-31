@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+output.log
+watchdog.pid
+
+# Databases
+*.db
+muninn_memory.db
+
+# Virtual environments
+venv/
+env/
+.env
+
+# MacOS
+.DS_Store
+
+# Data Folders
+2021/
+2022/
+2023/
+2024/
+2025/
+2026/
+documentos\ abogado/
+legislacion/

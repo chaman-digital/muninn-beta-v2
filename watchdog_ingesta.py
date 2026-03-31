@@ -4,16 +4,21 @@ import hashlib
 from datetime import datetime
 import json
 import time
+import subprocess
 from google import genai
 from google.genai import types
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from tinytag import TinyTag
+import mutagen
 
 # Configuración
 YEARS = range(2021, 2027)
 DB_PATH = "muninn_memory.db"
 SUPPORTED_IMAGE_FORMATS = ('.png', '.jpg', '.jpeg', '.webp')
 SUPPORTED_AUDIO_FORMATS = ('.mp3', '.wav', '.ogg', '.m4a', '.flac')
+SUPPORTED_VIDEO_FORMATS = ('.mov', '.mp4')
+SUPPORTED_DOC_FORMATS = ('.pdf',)
 
 def init_db():
     """Inicializa la base de datos SQLite con el esquema de Always-On Memory."""
@@ -27,9 +32,22 @@ def init_db():
             filename TEXT NOT NULL,
             hash_sha256 TEXT UNIQUE NOT NULL,
             path TEXT NOT NULL,
-            detected_date DATETIME NOT NULL
+            detected_date DATETIME NOT NULL,
+            creation_date TEXT,
+            gps_location TEXT
         )
     ''')
+
+    # Intenta agregar las nuevas columnas si la tabla ya existe y no las tiene
+    try:
+        cursor.execute('ALTER TABLE files ADD COLUMN creation_date TEXT')
+    except sqlite3.OperationalError:
+        pass # Columna ya existe
+
+    try:
+        cursor.execute('ALTER TABLE files ADD COLUMN gps_location TEXT')
+    except sqlite3.OperationalError:
+        pass # Columna ya existe
 
     # Tabla memories
     cursor.execute('''
@@ -68,7 +86,40 @@ def calculate_sha256(filepath):
         print(f"Error calculando hash para {filepath}: {e}")
         return None
 
-def process_file_with_gemini(filepath, file_type):
+def extract_apple_metadata(filepath):
+    """Extrae metadatos de creación y GPS para archivos m4a y mov de Apple."""
+    creation_date = None
+    gps_location = None
+
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext in ['.m4a', '.mp3', '.ogg', '.flac', '.wav']:
+            tag = TinyTag.get(filepath)
+            # Diferentes formatos pueden guardar año o fecha entera, se usa lo disponible.
+            creation_date = tag.year if tag.year else None
+
+        # Uso de mutagen/mp4 como fallback para m4a y mov donde sea posible
+        if ext in ['.m4a', '.mov', '.mp4']:
+            try:
+                from mutagen.mp4 import MP4
+                audio = MP4(filepath)
+                # Intenta extraer la fecha de creación '©day'
+                if '\xa9day' in audio:
+                    creation_date = audio['\xa9day'][0]
+
+                # GPS Location en .mov (apple specific - atom location) - simplificado
+                # Mutagen no es la mejor opción para GPS de mov, pero capturamos el tag si está como info de texto.
+                if '©xyz' in audio: # atom xyz suele guardar coordendas
+                    gps_location = audio['©xyz'][0]
+            except Exception as mp4_e:
+                pass
+
+    except Exception as e:
+        print(f"Error extrayendo metadatos de {filepath}: {e}")
+
+    return creation_date, gps_location
+
+def process_file_with_gemini(filepath, file_type, creation_date=None, gps_location=None):
     """Procesa el archivo usando la API de Gemini para extraer información."""
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -78,16 +129,31 @@ def process_file_with_gemini(filepath, file_type):
     client = genai.Client(api_key=api_key)
 
     filename = os.path.basename(filepath)
+
+    metadata_context = ""
+    if creation_date or gps_location:
+        metadata_context = f"\n    Metadatos forenses extraídos del archivo:\n"
+        if creation_date:
+            metadata_context += f"    - Fecha de creación real (Apple): {creation_date}\n"
+        if gps_location:
+            metadata_context += f"    - Ubicación GPS real (Apple): {gps_location}\n"
+        metadata_context += "    Usa esta información para cuadrar el tiempo del archivo con el de los eventos narrados o el contenido visual.\n"
+
+    pdf_context = ""
+    if file_type == "pdf":
+        pdf_context = "\n    ATENCIÓN ESPECIAL A PDF: Este es un documento PDF. Utiliza tu visión nativa multimodal para no solo leer el texto, sino identificar e interpretar rigurosamente la presencia de SELLOS, FIRMAS, membretes y la jerarquía visual del documento. Inclúyelo en raw_text de forma descriptiva.\n"
+
     # Prompt de análisis basado en el catálogo de violencias y esquema de DB
     prompt = f"""
-    Analiza este archivo (imagen de chat o audio) relacionado a un caso de violencia familiar y de género.
+    Analiza este archivo (imagen de chat, audio, video o documento PDF) relacionado a un caso de violencia familiar y de género.
     Basándote en el catálogo de violencias de la Ley General de Acceso de las Mujeres a una Vida Libre de Violencia y los Derechos de Niñas, Niños y Adolescentes (Violencia Psicoemocional, Física, Patrimonial, Económica, Sexual, Vicaria, Institucional), extrae la siguiente información:
 
     El archivo se llama: {filename}
+    {metadata_context}{pdf_context}
 
     {{
-        "raw_text": "Transcripción completa y literal del audio (incluyendo diarización si es audio, indicando quién habla) o el texto extraído (OCR) de la imagen. Si es audio, asegúrate de citar el nombre del archivo en la narrativa inicial.",
-        "visual_date": "Fecha y hora si es visible en la imagen (o inferida del audio). Formato YYYY-MM-DD HH:MM si es posible, de lo contrario null.",
+        "raw_text": "Transcripción completa y literal del audio (incluyendo diarización indicando quién habla) o el texto extraído visualmente. Si es PDF, describe explícitamente sellos, firmas, membretes. Si es audio, cita el nombre del archivo al inicio.",
+        "visual_date": "Fecha y hora si es visible en el archivo. Formato YYYY-MM-DD HH:MM si es posible, de lo contrario null.",
         "legal_classification": "Categoría de violencia identificada (Ej: 'Violencia Psicoemocional', 'Violencia Económica', 'Ninguna'). Puede ser una lista de strings.",
         "summary": "Resumen breve de la evidencia y los hechos.",
         "entities": "Lista de entidades identificadas (personas, lugares, instituciones).",
@@ -146,7 +212,7 @@ def process_file_with_gemini(filepath, file_type):
         print(f"Error procesando {filepath} con Gemini: {e}")
         return None
 
-def save_to_db(filepath, file_type, data, sha256_hash):
+def save_to_db(filepath, file_type, data, sha256_hash, creation_date=None, gps_location=None):
     """Guarda los resultados en la base de datos."""
     filename = os.path.basename(filepath)
     detected_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -155,11 +221,11 @@ def save_to_db(filepath, file_type, data, sha256_hash):
     cursor = conn.cursor()
 
     try:
-        # Insertar en tabla files
+        # Insertar en tabla files con metadatos Apple
         cursor.execute('''
-            INSERT INTO files (filename, hash_sha256, path, detected_date)
-            VALUES (?, ?, ?, ?)
-        ''', (filename, sha256_hash, filepath, detected_date))
+            INSERT INTO files (filename, hash_sha256, path, detected_date, creation_date, gps_location)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (filename, sha256_hash, filepath, detected_date, creation_date, gps_location))
 
         file_id = cursor.lastrowid
 
@@ -192,6 +258,10 @@ def process_new_file(filepath):
         file_type = "image"
     elif ext in SUPPORTED_AUDIO_FORMATS:
         file_type = "audio"
+    elif ext in SUPPORTED_VIDEO_FORMATS:
+        file_type = "video"
+    elif ext in SUPPORTED_DOC_FORMATS:
+        file_type = "pdf"
     else:
         return # Formato no soportado
 
@@ -211,11 +281,16 @@ def process_new_file(filepath):
         return
     conn.close()
 
-    # 2 & 3. Procesar con Gemini (OCR, Transcripción, Clasificación)
-    data = process_file_with_gemini(filepath, file_type)
+    # 2. Extraer metadatos de Apple si es audio/video
+    creation_date, gps_location = None, None
+    if file_type in ["audio", "video"]:
+        creation_date, gps_location = extract_apple_metadata(filepath)
+
+    # 3. Procesar con Gemini (Visión, Transcripción, Clasificación)
+    data = process_file_with_gemini(filepath, file_type, creation_date, gps_location)
 
     # 4. Guardar en SQLite
-    save_to_db(filepath, file_type, data, sha256_hash)
+    save_to_db(filepath, file_type, data, sha256_hash, creation_date, gps_location)
 
 class MuninnEventHandler(FileSystemEventHandler):
     def on_created(self, event):
