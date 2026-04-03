@@ -62,7 +62,7 @@ METADATA_JSON_PATH = os.path.join(BASE_DIR, "metadata_multimodal.json")
 
 # ── Orden de procesamiento por carpetas (prioridad descendente) ──
 # Raíz → 2026 desc. a 2021 → UVM/Legislación → Audios pesados
-# NOTA: 'previo a 2015' EXCLUIDO del escaneo por instrucción operativa V1.2
+# NOTA: 'previo a 2015' EXCLUIDO permanentemente (V1.2+)
 BATCH_PRIORITY_ORDER = [
     ("Raíz", BASE_DIR, False),
     ("2026", os.path.join(BASE_DIR, "2026"), True),
@@ -71,7 +71,7 @@ BATCH_PRIORITY_ORDER = [
     ("2023", os.path.join(BASE_DIR, "2023"), True),
     ("2022", os.path.join(BASE_DIR, "2022"), True),
     ("2021", os.path.join(BASE_DIR, "2021"), True),
-    # ("Previo a 2015", ...) — EXCLUIDO V1.2
+    # ("Previo a 2015", ...) — EXCLUIDO PERMANENTEMENTE
     ("Documentos IO", os.path.join(BASE_DIR, "Documentos IO"), True),
     ("PAGOS PENSIÓN", os.path.join(BASE_DIR, "PAGOS PENSIÓN"), True),
     ("VLV", os.path.join(BASE_DIR, "VLV"), True),
@@ -80,17 +80,23 @@ BATCH_PRIORITY_ORDER = [
     ("Grabaciones de Audio", os.path.join(BASE_DIR, "grabaciones de audio"), True),
 ]
 
+# Archivos que se saltan en el escaneo automático (serán analizados en sesión dedicada)
+SKIP_FILES = {
+    "JUICIO FAMILIAR.pdf",  # 119.3MB — sesión dedicada con Gemini 1.5 Pro
+}
+
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.heic'}
 AUDIO_EXTS = {'.m4a', '.mp3', '.wav', '.ogg', '.flac'}
 VIDEO_EXTS = {'.mp4', '.mov'}
 DOC_EXTS = {'.pdf'}
-ALL_SUPPORTED = IMAGE_EXTS | AUDIO_EXTS | VIDEO_EXTS | DOC_EXTS
+TEXT_EXTS = {'.md', '.txt'}  # Texto plano y Markdown
+ALL_SUPPORTED = IMAGE_EXTS | AUDIO_EXTS | VIDEO_EXTS | DOC_EXTS | TEXT_EXTS
 
-# ── Protocolo de Ingesta Crítica V1.2 ──
-# Orden estricto por tipo: A. Texto/PDF → B. Imágenes → C. Audios → D. Videos
+# ── Protocolo de Ingesta Crítica V1.3 ──
+# Orden estricto: A. Texto/MD → B. PDF(<15MB) → C. Imágenes(×20) → D. Audios(×3) → E. Videos(×1)
 # Dentro de cada categoría: menor a mayor peso en KB
 MAX_DOC_SIZE_BYTES = 15 * 1024 * 1024  # 15MB — PDFs mayores se saltan
-SUB_BATCH_IMAGES = 10    # Imágenes en lotes de 10
+SUB_BATCH_IMAGES = 20    # Imágenes en lotes de 20
 SUB_BATCH_AUDIOS = 3     # Audios en lotes de 3
 SUB_BATCH_VIDEOS = 1     # Videos uno a uno (pesados)
 
@@ -99,7 +105,7 @@ GEMINI_MODEL_HEAVY = "gemini-pro-latest"     # Audio y video (razonamiento profu
 GEMINI_MODEL_FAST = "gemini-flash-latest"    # Imágenes y documentos (rápido)
 # Rate limiting y resiliencia ante 429 (Resource Exhausted)
 API_DELAY_SECONDS = 4      # Pausa normal entre llamadas
-RETRY_DELAY_429 = 10       # Pausa base tras error 429
+RETRY_DELAY_429 = 65       # 65s = ciclo completo de quota API antes de reintentar
 MAX_RETRIES_429 = 3        # Reintentos máximos por archivo ante 429
 BATCH_PAUSE = 30           # Pausa entre sub-lotes (segundos)
 
@@ -331,11 +337,13 @@ def get_file_type(filepath: str) -> str | None:
         return "video"
     elif ext in DOC_EXTS:
         return "documento"
+    elif ext in TEXT_EXTS:
+        return "texto"
     return None
 
 
 # ═══════════════════════════════════════════════════════════════
-#  DESCUBRIMIENTO Y CLASIFICACIÓN DE ARCHIVOS (V1.2)
+#  DESCUBRIMIENTO Y CLASIFICACIÓN DE ARCHIVOS (V1.3)
 # ═══════════════════════════════════════════════════════════════
 
 def _scan_single_dir(directory: str, recursive: bool, seen_paths: set) -> list[dict]:
@@ -400,55 +408,74 @@ def _scan_single_dir(directory: str, recursive: bool, seen_paths: set) -> list[d
 
 
 def _classify_by_type(all_files: list[dict]) -> list[tuple[str, int, list[dict]]]:
-    """Clasifica archivos por tipo y los organiza en sub-lotes con orden estricto:
-    A. Texto/PDFs (< 15MB) → B. Imágenes (lotes de 10) → C. Audios (lotes de 3) → D. Videos (uno a uno).
+    """Clasifica archivos por tipo y los organiza en sub-lotes con orden estricto V1.3:
+    A. Texto/MD → B. PDFs (< 15MB) → C. Imágenes (lotes de 20) → D. Audios (lotes de 3) → E. Videos.
     Dentro de cada categoría: ordenados por tamaño ascendente (menor a mayor KB)."""
 
-    docs = [f for f in all_files if f["type"] == "documento" and f["size_bytes"] < MAX_DOC_SIZE_BYTES]
+    # Separar por tipo
+    texts = [f for f in all_files if f["type"] == "texto"]
+    docs = [f for f in all_files if f["type"] == "documento"
+            and f["size_bytes"] < MAX_DOC_SIZE_BYTES
+            and f["filename"] not in SKIP_FILES]
     images = [f for f in all_files if f["type"] == "imagen"]
     audios = [f for f in all_files if f["type"] == "audio"]
     videos = [f for f in all_files if f["type"] == "video"]
-    oversize_docs = [f for f in all_files if f["type"] == "documento" and f["size_bytes"] >= MAX_DOC_SIZE_BYTES]
 
-    # Ordenar cada categoría por tamaño ascendente
+    # Archivos saltados explícitamente
+    skipped_explicit = [f for f in all_files if f["filename"] in SKIP_FILES]
+    oversize_docs = [f for f in all_files if f["type"] == "documento"
+                     and f["size_bytes"] >= MAX_DOC_SIZE_BYTES
+                     and f["filename"] not in SKIP_FILES]
+
+    # Ordenar cada categoría por tamaño ascendente (menor a mayor KB)
+    texts.sort(key=lambda f: f["size_bytes"])
     docs.sort(key=lambda f: f["size_bytes"])
     images.sort(key=lambda f: f["size_bytes"])
     audios.sort(key=lambda f: f["size_bytes"])
     videos.sort(key=lambda f: f["size_bytes"])
 
+    # Reportar archivos saltados
+    if skipped_explicit:
+        log.warning(f"  {len(skipped_explicit)} archivo(s) saltados (sesión dedicada):")
+        for sf in skipped_explicit:
+            log.warning(f"    ▸ {sf['filename']} ({sf['size_bytes'] / (1024*1024):.1f} MB) — Sesión dedicada Gemini Pro")
     if oversize_docs:
         log.warning(f"  {len(oversize_docs)} PDF(s) exceden 15MB y serán omitidos:")
         for od in oversize_docs:
             log.warning(f"    ▸ {od['filename']} ({od['size_bytes'] / (1024*1024):.1f} MB)")
 
-    # Construir sub-lotes: (nombre_sublote, tamaño_sublote, archivos)
+    # Construir sub-lotes: (nombre_sublote, capacidad, archivos)
     sub_batches = []
 
-    # A. Documentos/PDFs — procesados en un solo lote
-    if docs:
-        sub_batches.append(("A. Texto/PDF (< 15MB)", len(docs), docs))
+    # A. Texto/Markdown — todos en un lote
+    if texts:
+        sub_batches.append(("A. Texto/MD", len(texts), texts))
 
-    # B. Imágenes — en lotes de SUB_BATCH_IMAGES
+    # B. Documentos/PDFs (< 15MB) — en un solo lote
+    if docs:
+        sub_batches.append(("B. PDF (< 15MB)", len(docs), docs))
+
+    # C. Imágenes — en lotes de SUB_BATCH_IMAGES (20)
     for i in range(0, len(images), SUB_BATCH_IMAGES):
         chunk = images[i:i + SUB_BATCH_IMAGES]
-        sub_batches.append((f"B. Imágenes [{i+1}-{i+len(chunk)}]", SUB_BATCH_IMAGES, chunk))
+        sub_batches.append((f"C. Imágenes [{i+1}-{i+len(chunk)}]", SUB_BATCH_IMAGES, chunk))
 
-    # C. Audios — en lotes de SUB_BATCH_AUDIOS
+    # D. Audios — en lotes de SUB_BATCH_AUDIOS (3)
     for i in range(0, len(audios), SUB_BATCH_AUDIOS):
         chunk = audios[i:i + SUB_BATCH_AUDIOS]
-        sub_batches.append((f"C. Audios [{i+1}-{i+len(chunk)}]", SUB_BATCH_AUDIOS, chunk))
+        sub_batches.append((f"D. Audios [{i+1}-{i+len(chunk)}]", SUB_BATCH_AUDIOS, chunk))
 
-    # D. Videos — uno a uno
+    # E. Videos — uno a uno
     for i, vid in enumerate(videos, 1):
-        sub_batches.append((f"D. Video [{i}]", SUB_BATCH_VIDEOS, [vid]))
+        sub_batches.append((f"E. Video [{i}]", SUB_BATCH_VIDEOS, [vid]))
 
     return sub_batches
 
 
 def discover_and_classify() -> tuple[list[tuple[str, int, list[dict]]], dict]:
-    """Fase 1 del Protocolo V1.2: Descubre todos los archivos de las carpetas
+    """Fase 1 del Protocolo V1.3: Descubre todos los archivos de las carpetas
     permitidas y los clasifica en sub-lotes por tipo con orden estricto."""
-    log.header("FASE 1: Descubrimiento y Clasificación (Protocolo V1.2)")
+    log.header("FASE 1: Descubrimiento y Clasificación (Protocolo V1.3)")
     seen_paths = set()
     all_files = []
 
@@ -473,8 +500,8 @@ def discover_and_classify() -> tuple[list[tuple[str, int, list[dict]]], dict]:
         log.info(f"  {t}: {c} archivos")
 
     # Clasificar por tipo con sub-lotes
-    log.header("Clasificación por Tipo (Orden Estricto V1.2)")
-    log.info("  Prioridad: A. Texto/PDF → B. Imágenes (×10) → C. Audios (×3) → D. Videos (×1)")
+    log.header("Clasificación por Tipo (Orden Estricto V1.3)")
+    log.info("  Prioridad: A. Texto/MD → B. PDF(<15MB) → C. Imágenes(×20) → D. Audios(×3) → E. Videos(×1)")
     sub_batches = _classify_by_type(all_files)
     log.success(f"Organizados en {len(sub_batches)} sub-lotes de procesamiento")
 
@@ -685,10 +712,9 @@ def analyze_with_gemini(filepath: str, file_type: str,
             is_503 = "503" in error_str or "unavailable" in error_str
 
             if (is_429 or is_503) and attempt < MAX_RETRIES_429:
-                wait_time = RETRY_DELAY_429 * attempt  # Backoff: 10s, 20s, 30s
                 log.warning(f"  429/503 en {filename} (intento {attempt}/{MAX_RETRIES_429}). "
-                            f"Esperando {wait_time}s antes de reintentar...")
-                time.sleep(wait_time)
+                            f"Pausa de {RETRY_DELAY_429}s (ciclo completo de quota API)...")
+                time.sleep(RETRY_DELAY_429)  # 65s = ciclo completo de quota
                 continue
             else:
                 log.error(f"  Error procesando {filename} (intento {attempt}): {e}")
@@ -1065,11 +1091,11 @@ def _process_single_file(file_info: dict, client, tracker, all_metadata: list) -
 
 def main():
     """Ejecuta el pipeline completo del Analista Proactivo Forense.
-    Protocolo de Ingesta Crítica V1.2:
-      A. Texto/PDF (< 15MB) → B. Imágenes (×10) → C. Audios (×3) → D. Videos (×1)
+    Protocolo de Ingesta Crítica V1.3:
+      A. Texto/MD → B. PDF(<15MB) → C. Imágenes(×20) → D. Audios(×3) → E. Videos(×1)
     Dentro de cada categoría: menor a mayor peso en KB."""
 
-    log.header("ANALISTA PROACTIVO FORENSE — MUNINN V1.2 (Ingesta Crítica)")
+    log.header("ANALISTA PROACTIVO FORENSE — MUNINN V1.3 (Ingesta por Prioridad y Tipo)")
     start_time = time.time()
 
     # ── Validar API Key ──
@@ -1099,7 +1125,7 @@ def main():
     log.info(f"  Hashes en hallazgos proactivos: {len(proactive_hashes)}")
 
     # ── Fase 3: Procesamiento por sub-lotes tipificados ──
-    log.header("FASE 3: Procesamiento por Sub-Lotes (Protocolo V1.2)")
+    log.header("FASE 3: Procesamiento por Sub-Lotes (Protocolo V1.3)")
     tracker = PatternTracker()
     all_metadata = load_metadata_json()
     global_processed = 0
@@ -1122,7 +1148,7 @@ def main():
             log.info(f"  Sub-Lote [{lote_name}]: ya procesado. Saltando.")
             continue
 
-        # ═══ FILTRO DE CALIDAD V1.2 ═══
+        # ═══ FILTRO DE CALIDAD V1.3 ═══
         print()
         print(f"{'='*60}")
         print(f"  Iniciando Lote {lote_num}: {lote_name}")
@@ -1198,7 +1224,7 @@ def main():
 
     # ── Resumen Final ──
     elapsed = time.time() - start_time
-    log.header("RESUMEN DE EJECUCIÓN (Protocolo V1.2)")
+    log.header("RESUMEN DE EJECUCIÓN (Protocolo V1.3)")
     log.info(f"Tiempo total de ejecución:   {elapsed / 60:.1f} minutos")
     log.info(f"Sub-lotes procesados:        {total_sub_batches}")
     log.info(f"Archivos procesados:         {global_processed}")
@@ -1213,7 +1239,7 @@ def main():
         for rp in reports_generated:
             log.info(f"  ▸ {os.path.basename(rp)}")
 
-    log.success("Analista Proactivo Forense V1.2 finalizado correctamente.")
+    log.success("Analista Proactivo Forense V1.3 finalizado correctamente.")
 
 
 if __name__ == "__main__":
