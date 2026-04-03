@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════
-#  MUNINN BETA V2 — .gitignore
-#  Solo trackear: código (.py), reportes (.md),
-#  configuración (.gitignore, AGENTS.md, .ag_*)
+#  MUNINN V1.3 — .gitignore
+#  POLÍTICA: Solo trackear .py, .md, .json, .gitignore
+#  Cualquier archivo >10MB que no sea .py o .md → EXCLUIDO
 # ═══════════════════════════════════════════════════
 
 # ── Python ──
@@ -54,13 +54,17 @@ muninn_memory.db
 *.xlsx
 *.pptx
 
-# ── Logs y archivos temporales ──
+# ── Logs, dumps y archivos temporales ──
 *.log
 output.log
 watchdog.pid
 *.pid
 *.tmp
 *.bak
+docx_dump.txt
+pdf_text.txt
+temp_*.txt
+temp_*.json
 
 # ── Carpetas de evidencia (solo local) ──
 2021/
