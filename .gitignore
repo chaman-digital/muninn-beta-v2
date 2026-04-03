@@ -1,0 +1,97 @@
+# ═══════════════════════════════════════════════════
+#  MUNINN BETA V2 — .gitignore
+#  Solo trackear: código (.py), reportes (.md),
+#  configuración (.gitignore, AGENTS.md, .ag_*)
+# ═══════════════════════════════════════════════════
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# ── Virtual Environments ──
+.venv/
+venv/
+env/
+.env
+
+# ── Bases de Datos (NUNCA trackear) ──
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+muninn_memory.db
+
+# ── Multimedia pesada (>50MB posible) ──
+*.m4a
+*.mp3
+*.wav
+*.ogg
+*.flac
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.heic
+
+# ── Imágenes (evidencia — solo local) ──
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.tiff
+*.bmp
+
+# ── Documentos binarios pesados ──
+*.pdf
+*.docx
+*.doc
+*.xlsx
+*.pptx
+
+# ── Logs y archivos temporales ──
+*.log
+output.log
+watchdog.pid
+*.pid
+*.tmp
+*.bak
+
+# ── Carpetas de evidencia (solo local) ──
+2021/
+2022/
+2023/
+2024/
+2025/
+2026/
+previo a 2015/
+grabaciones de audio/
+Documentos IO/
+PAGOS PENSIÓN/
+VLV/
+legislacion/
+
+# ── macOS ──
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── Binarios y herramientas ──
+cloudflared
+.webui_secret_key
+
+# ── Metadata generada (regenerable) ──
+metadata_multimodal.json
+
+# ── IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
