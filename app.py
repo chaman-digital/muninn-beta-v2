@@ -1,8 +1,8 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║  MUNINN — Panel Forense de Evidencia Digital                ║
-║  Versión 1.0 · Protocolo de Lingüística Forense            ║
-║  Base de Datos: muninn_memory.db                            ║
+║  MUNINN — Panel Forense de Evidencia Digital              ║
+║  Versión 2.0 · Estándares CDMX 2026                      ║
+║  Citación: verbatim + timestamps + fundamento legal      ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -304,12 +304,16 @@ st.markdown("""
 # ─────────────────────────────────────────────────
 @st.cache_resource
 def get_connection():
-    """Conexión reutilizable a SQLite."""
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    """Conexión reutilizable a SQLite con optimización de RAM."""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA cache_size = -8000")  # 8MB max cache
+    conn.execute("PRAGMA temp_store = MEMORY")
+    return conn
 
 
+@st.cache_data(ttl=30)
 def run_query(query: str, params: tuple = ()) -> pd.DataFrame:
-    """Ejecutar una consulta y regresar un DataFrame."""
+    """Ejecutar una consulta (cacheada 30s para ligereza)."""
     conn = get_connection()
     return pd.read_sql_query(query, conn, params=params)
 
@@ -414,9 +418,6 @@ def semantic_search(query: str, classification_filter: str = None,
     sql = f"""
         SELECT
             m.id,
-            f.filename,
-            f.path,
-            f.hash_sha256,
             m.raw_text,
             m.visual_date,
             m.legal_classification,
@@ -424,11 +425,13 @@ def semantic_search(query: str, classification_filter: str = None,
             m.entities,
             m.topics,
             m.importance,
-            m.connections
+            m.connections,
+            f.hash_sha256
         FROM memories m
         JOIN files f ON m.file_id = f.id
         WHERE {where}
         ORDER BY m.importance DESC, m.id DESC
+        LIMIT 50
     """
     return run_query(sql, tuple(params))
 
@@ -486,8 +489,8 @@ with st.sidebar:
 
     st.markdown("""
     <div style="position:fixed;bottom:16px;left:16px;font-size:0.65rem;color:#3a4258;">
-        Muninn v1.0 · Protocolo Forense<br>
-        Lingüística Forense Activa
+        Muninn v2.0 · CDMX 2026<br>
+        Citación Forense Activa
     </div>
     """, unsafe_allow_html=True)
 
@@ -562,11 +565,25 @@ if "Buscador" in page:
                 raw = html_escape(row.get("raw_text", "") or "")
                 summary = html_escape(row.get("summary", "") or "")
                 visual_date = html_escape(row.get("visual_date", "") or "Sin fecha visible")
-                filename = html_escape(row.get("filename", ""))
                 entities = html_escape(row.get("entities", "") or "")
+                classification = row.get("legal_classification", "") or ""
 
-                # Highlight search terms in text
-                highlighted_raw = truncate_text(raw, 350)
+                # Derivar artículo legal CDMX 2026
+                legal_map = {
+                    "psicoemocional": "Art. 323 Quáter CC CDMX",
+                    "física": "Art. 323 Quáter, fr. I CC CDMX",
+                    "patrimonial": "Art. 323 Quáter, fr. III CC CDMX",
+                    "económica": "Art. 323 Sextus CC CDMX",
+                    "vicaria": "Art. 6, fr. VI LGAMVLV",
+                    "institucional": "Art. 20, fr. III LGAMVLV",
+                }
+                legal_ref = "Sin fundamento asignado"
+                for key, article in legal_map.items():
+                    if key in classification.lower():
+                        legal_ref = article
+                        break
+
+                highlighted_raw = truncate_text(raw, 400)
                 for token in search_query.split():
                     if len(token) > 2:
                         pattern = re.compile(re.escape(token), re.IGNORECASE)
@@ -576,24 +593,25 @@ if "Buscador" in page:
                         )
 
                 summary_truncated = truncate_text(summary, 300)
-                entities_truncated = truncate_text(entities, 100)
 
                 card_html = (
                     '<div class="forensic-card">'
-                    '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:12px;">'
-                    '<div>'
-                    f'<span style="font-weight:700;font-size:0.95rem;">{filename}</span>'
-                    f'<span style="color:var(--text-muted);font-size:0.78rem;margin-left:10px;">📅 {visual_date}</span>'
+                    '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px;">'
+                    '<div style="display:flex;align-items:center;gap:10px;">'
+                    f'<span style="font-weight:800;font-size:0.95rem;color:var(--accent-cyan);">&#128197; {visual_date}</span>'
                     '</div>'
                     f'<div>{badges}</div>'
                     '</div>'
+                    f'<div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">'
+                    f'&#128100; <strong>Personas:</strong> {entities if entities else "No identificadas"}'
+                    '</div>'
                     f'<div class="verbatim-quote">{highlighted_raw}</div>'
                     f'<p style="font-size:0.84rem;color:var(--text-secondary);margin:10px 0 6px;">'
-                    f'<strong>Síntesis pericial:</strong> {summary_truncated}'
+                    f'<strong>S&#237;ntesis pericial:</strong> {summary_truncated}'
                     '</p>'
                     '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:10px;">'
                     f'<div style="flex:1;min-width:200px;">{importance_html}</div>'
-                    f'<div style="font-size:0.75rem;color:var(--text-muted);">👤 {entities_truncated}</div>'
+                    f'<div style="font-size:0.78rem;color:var(--accent-amber);font-weight:600;">&#9878;&#65039; {legal_ref}</div>'
                     '</div>'
                     '</div>'
                 )
@@ -602,9 +620,9 @@ if "Buscador" in page:
     else:
         # Show recent high-importance memories by default
         recent = run_query("""
-            SELECT m.*, f.filename, f.path, f.hash_sha256
+            SELECT m.visual_date, m.legal_classification, m.summary,
+                   m.entities, m.importance
             FROM memories m
-            JOIN files f ON m.file_id = f.id
             WHERE m.importance >= 5
             ORDER BY m.importance DESC
             LIMIT 6
@@ -625,18 +643,18 @@ if "Buscador" in page:
                     badges = get_classification_badge(row.get("legal_classification", ""))
                     importance = row.get("importance", 0) or 0
                     summary = truncate_text(html_escape(row.get("summary", "") or ""), 180)
-                    filename = html_escape(row.get("filename", ""))
+                    entities = html_escape(row.get("entities", "") or "")
                     visual_date = html_escape(row.get("visual_date", "") or "")
 
                     st.markdown(f"""
                     <div class="forensic-card">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                            <span style="font-weight:700;font-size:0.88rem;">{filename}</span>
+                            <span style="font-weight:800;font-size:0.88rem;color:var(--accent-cyan);">&#128197; {visual_date}</span>
                             <span style="font-weight:800;font-size:1.1rem;color:var(--accent-cyan);">{importance}/10</span>
                         </div>
                         <div style="margin-bottom:8px;">{badges}</div>
                         <p style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5;">{summary}</p>
-                        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:6px;">📅 {visual_date}</div>
+                        <div style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;">&#128100; {entities if entities else 'Sin identificar'}</div>
                     </div>
                     """, unsafe_allow_html=True)
 
@@ -781,39 +799,39 @@ elif "Reportes" in page:
             {"year": "2019", "report": "D", "icon": "🏥", "tag": "report-tag-d",
              "title": "Accidente Vial y Abandono de Rehabilitación",
              "detail": "I.A.L. sufre un accidente vehicular traumático. Se prescriben intervenciones quirúrgicas y fisioterapia. La madre custodia frena todo seguimiento médico posterior al alta inmediata.",
-             "evidence": "RADIOGRAFIA DE COLUMNA - IO ANZORENA.pdf"},
+             "legal_basis": "Art. 4 Constitucional (Derecho a la Salud) - Art. 323 Quater CC CDMX"},
             {"year": "2020", "report": "D", "icon": "🏥", "tag": "report-tag-d",
              "title": "Cese Total de Continuidad Médica",
              "detail": "Se confirma la ausencia absoluta de archivos, citas o recibos que demuestren interés de continuidad médica por parte de la madre custodia desde este año.",
-             "evidence": "Registros médicos ausentes"},
+             "legal_basis": "Art. 4 Constitucional - Art. 103, fr. VII LGDNNA"},
             {"year": "2021", "report": "D", "icon": "🏥", "tag": "report-tag-d",
              "title": "Bajada de Índice de Masa Corporal detectada",
              "detail": "Supervisión precaria empuja a la adolescente a una condición registrada de bajo peso. Reportes institucionales señalan letargo.",
-             "evidence": "IMG_9434.PNG, seguimientos pediátricos"},
+             "legal_basis": "Art. 103, fr. I LGDNNA (Alimentacion) - Art. 323 Quater CC CDMX"},
             {"year": "2022", "report": "B", "icon": "🏫", "tag": "report-tag-b",
              "title": "Inicio del Patrón de Ausentismo Escolar",
              "detail": "Se detecta que el 78% de faltas injustificadas caen en jueves o viernes, generando puentes que coinciden con los descansos de la madre. La escolaridad se subordina a conveniencia materna.",
-             "evidence": "Colegio Queen Mary.m4a, Colegio Queen Mary 2.m4a, Colegio Queen Mary 3.m4a"},
+             "legal_basis": "Art. 3 Constitucional - Arts. 57/103, fr. XI LGDNNA"},
             {"year": "2022", "report": "C", "icon": "🎯", "tag": "report-tag-c",
              "title": "Viajes de Ocio a Mazatlán y San Miguel de Allende",
              "detail": "Viajes de fin de semana coinciden con los puentes de jueves/viernes del Reporte B. La menor fue delegada sin aviso al padre. Se documentan presiones psicoemocionales.",
-             "evidence": "Video_21_marzo.mp4, Nota de voz.m4a"},
+             "legal_basis": "Art. 323 Septimus CC CDMX (Alienacion Parental) - Art. 416 CC CDMX"},
             {"year": "2022-10", "report": "—", "icon": "⚖️", "tag": "report-tag-b",
              "title": "Presentación de Demanda de Guarda y Custodia",
              "detail": "Expediente 1784/2022. Actor: René Iván Anzorena Hernández. Se formalizan ante Juzgado Familiar los hechos de violencia, negligencia y abandono.",
-             "evidence": "Demanda indexada en memoria #1 de muninn_memory.db"},
+             "legal_basis": "Art. 444, fr. III CC CDMX (Perdida de Patria Potestad)"},
             {"year": "2023-06", "report": "B", "icon": "🏫", "tag": "report-tag-b",
              "title": "Recomendación Formal de Baja por Coordinador",
              "detail": "Carlos Alonso López, Coordinador de Queen Mary/UVM, emite dictamen: «La inasistencia reiterada y la falta de supervisión en tareas han comprometido la permanencia de la alumna.»",
-             "evidence": "UVM Campus San Rafael.m4a, UVM Campus San Rafael 2.m4a, UVM Campus San Rafael 3.m4a"},
+             "legal_basis": "Art. 3 Constitucional - Art. 57, fr. II LGDNNA (Derecho a la Educacion)"},
             {"year": "2023-09", "report": "C", "icon": "🎯", "tag": "report-tag-c",
              "title": "Denuncia Fabricada de Retención Ilegal vs. Viaje a Guadalajara",
              "detail": "11 de septiembre: se interpone querella CI-FIDCANNA/59. Los metadatos GPS y fotográficos ubican a la madre en Guadalajara y Guanajuato del 9 al 14 de septiembre, vacacionando con su pareja.",
-             "evidence": "Captura de Pantalla 2023-06-27, IMG_1054.PNG, Chats con 'Guayabita' (Anabell López)"},
+             "legal_basis": "Arts. 309/311 CP CDMX (Difamacion y Falsa Denuncia)"},
             {"year": "2023+", "report": "D", "icon": "🏥", "tag": "report-tag-d",
              "title": "Manifestaciones de Cutting y Ausencia de Terapia",
              "detail": "Tras aislamiento socioafectivo, la menor reporta etapas depresivas con lesiones autoinfligidas referenciadas por orientadores de Queen Mary. La madre custodia no brinda contención psiquiátrica.",
-             "evidence": "Es Un Sueño - IO.m4a, Otro Sueño - IO.m4a, Un Sueño - IO.m4a, Nota de voz.m4a"},
+             "legal_basis": "Art. 4 Constitucional (Salud Mental) - Art. 6, fr. VI LGAMVLV"},
         ]
 
         for evt in timeline_events:
@@ -831,8 +849,8 @@ elif "Reportes" in page:
                     <p style="font-size:0.84rem;color:var(--text-secondary);line-height:1.6;">
                         {evt['detail']}
                     </p>
-                    <div style="margin-top:10px;font-size:0.75rem;color:var(--text-muted);">
-                        📎 <em>{evt['evidence']}</em>
+                    <div style="margin-top:10px;font-size:0.78rem;color:var(--accent-amber);font-weight:600;">
+                        &#9878;&#65039; <em>{evt['legal_basis']}</em>
                     </div>
                 </div>
             </div>
