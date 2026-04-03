@@ -60,17 +60,18 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "muninn_memory.db")
 METADATA_JSON_PATH = os.path.join(BASE_DIR, "metadata_multimodal.json")
 
-# ── Orden de procesamiento por lotes (prioridad descendente) ──
-# Raíz → 2026 descendiendo a 2021 → UVM/Legislación → Audios/Videos pesados
+# ── Orden de procesamiento por carpetas (prioridad descendente) ──
+# Raíz → 2026 desc. a 2021 → UVM/Legislación → Audios pesados
+# NOTA: 'previo a 2015' EXCLUIDO del escaneo por instrucción operativa V1.2
 BATCH_PRIORITY_ORDER = [
-    ("Raíz", BASE_DIR, False),                                                   # Solo raíz, sin recursión
+    ("Raíz", BASE_DIR, False),
     ("2026", os.path.join(BASE_DIR, "2026"), True),
     ("2025", os.path.join(BASE_DIR, "2025"), True),
     ("2024", os.path.join(BASE_DIR, "2024"), True),
     ("2023", os.path.join(BASE_DIR, "2023"), True),
     ("2022", os.path.join(BASE_DIR, "2022"), True),
     ("2021", os.path.join(BASE_DIR, "2021"), True),
-    ("Previo a 2015", os.path.join(BASE_DIR, "previo a 2015"), True),
+    # ("Previo a 2015", ...) — EXCLUIDO V1.2
     ("Documentos IO", os.path.join(BASE_DIR, "Documentos IO"), True),
     ("PAGOS PENSIÓN", os.path.join(BASE_DIR, "PAGOS PENSIÓN"), True),
     ("VLV", os.path.join(BASE_DIR, "VLV"), True),
@@ -85,6 +86,14 @@ VIDEO_EXTS = {'.mp4', '.mov'}
 DOC_EXTS = {'.pdf'}
 ALL_SUPPORTED = IMAGE_EXTS | AUDIO_EXTS | VIDEO_EXTS | DOC_EXTS
 
+# ── Protocolo de Ingesta Crítica V1.2 ──
+# Orden estricto por tipo: A. Texto/PDF → B. Imágenes → C. Audios → D. Videos
+# Dentro de cada categoría: menor a mayor peso en KB
+MAX_DOC_SIZE_BYTES = 15 * 1024 * 1024  # 15MB — PDFs mayores se saltan
+SUB_BATCH_IMAGES = 10    # Imágenes en lotes de 10
+SUB_BATCH_AUDIOS = 3     # Audios en lotes de 3
+SUB_BATCH_VIDEOS = 1     # Videos uno a uno (pesados)
+
 # Modelos Gemini — alias verificados con Google AI Studio (abril 2026)
 GEMINI_MODEL_HEAVY = "gemini-pro-latest"     # Audio y video (razonamiento profundo)
 GEMINI_MODEL_FAST = "gemini-flash-latest"    # Imágenes y documentos (rápido)
@@ -92,8 +101,7 @@ GEMINI_MODEL_FAST = "gemini-flash-latest"    # Imágenes y documentos (rápido)
 API_DELAY_SECONDS = 4      # Pausa normal entre llamadas
 RETRY_DELAY_429 = 10       # Pausa base tras error 429
 MAX_RETRIES_429 = 3        # Reintentos máximos por archivo ante 429
-BATCH_SIZE = 50            # Archivos por lote antes de pausa larga
-BATCH_PAUSE = 30           # Pausa entre lotes (segundos)
+BATCH_PAUSE = 30           # Pausa entre sub-lotes (segundos)
 
 # Patrones objetivo de detección
 PATRON_DIFAMACION = "difamacion"
@@ -327,11 +335,11 @@ def get_file_type(filepath: str) -> str | None:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  DESCUBRIMIENTO DE ARCHIVOS POR LOTES
+#  DESCUBRIMIENTO Y CLASIFICACIÓN DE ARCHIVOS (V1.2)
 # ═══════════════════════════════════════════════════════════════
 
 def _scan_single_dir(directory: str, recursive: bool, seen_paths: set) -> list[dict]:
-    """Escanea un directorio individual y retorna archivos soportados, ordenados por tamaño ascendente."""
+    """Escanea un directorio individual y retorna archivos soportados."""
     files = []
     if not os.path.isdir(directory):
         return files
@@ -361,7 +369,6 @@ def _scan_single_dir(directory: str, recursive: bool, seen_paths: set) -> list[d
                     "size_bytes": size,
                 })
     else:
-        # Solo archivos directos (sin recursión)
         try:
             for fname in os.listdir(directory):
                 fpath = os.path.join(directory, fname)
@@ -389,39 +396,89 @@ def _scan_single_dir(directory: str, recursive: bool, seen_paths: set) -> list[d
         except OSError:
             pass
 
-    # Ordenar por tamaño ascendente (archivos pequeños primero)
-    files.sort(key=lambda f: f["size_bytes"])
     return files
 
 
-def discover_files_by_batch() -> list[tuple[str, list[dict]]]:
-    """Descubre archivos organizados por lotes según BATCH_PRIORITY_ORDER.
-    Cada lote es una tupla (nombre_lote, lista_archivos).
-    Dentro de cada lote, archivos ordenados por tamaño ascendente."""
-    log.header("FASE 1: Descubrimiento de Archivos por Lotes")
+def _classify_by_type(all_files: list[dict]) -> list[tuple[str, int, list[dict]]]:
+    """Clasifica archivos por tipo y los organiza en sub-lotes con orden estricto:
+    A. Texto/PDFs (< 15MB) → B. Imágenes (lotes de 10) → C. Audios (lotes de 3) → D. Videos (uno a uno).
+    Dentro de cada categoría: ordenados por tamaño ascendente (menor a mayor KB)."""
+
+    docs = [f for f in all_files if f["type"] == "documento" and f["size_bytes"] < MAX_DOC_SIZE_BYTES]
+    images = [f for f in all_files if f["type"] == "imagen"]
+    audios = [f for f in all_files if f["type"] == "audio"]
+    videos = [f for f in all_files if f["type"] == "video"]
+    oversize_docs = [f for f in all_files if f["type"] == "documento" and f["size_bytes"] >= MAX_DOC_SIZE_BYTES]
+
+    # Ordenar cada categoría por tamaño ascendente
+    docs.sort(key=lambda f: f["size_bytes"])
+    images.sort(key=lambda f: f["size_bytes"])
+    audios.sort(key=lambda f: f["size_bytes"])
+    videos.sort(key=lambda f: f["size_bytes"])
+
+    if oversize_docs:
+        log.warning(f"  {len(oversize_docs)} PDF(s) exceden 15MB y serán omitidos:")
+        for od in oversize_docs:
+            log.warning(f"    ▸ {od['filename']} ({od['size_bytes'] / (1024*1024):.1f} MB)")
+
+    # Construir sub-lotes: (nombre_sublote, tamaño_sublote, archivos)
+    sub_batches = []
+
+    # A. Documentos/PDFs — procesados en un solo lote
+    if docs:
+        sub_batches.append(("A. Texto/PDF (< 15MB)", len(docs), docs))
+
+    # B. Imágenes — en lotes de SUB_BATCH_IMAGES
+    for i in range(0, len(images), SUB_BATCH_IMAGES):
+        chunk = images[i:i + SUB_BATCH_IMAGES]
+        sub_batches.append((f"B. Imágenes [{i+1}-{i+len(chunk)}]", SUB_BATCH_IMAGES, chunk))
+
+    # C. Audios — en lotes de SUB_BATCH_AUDIOS
+    for i in range(0, len(audios), SUB_BATCH_AUDIOS):
+        chunk = audios[i:i + SUB_BATCH_AUDIOS]
+        sub_batches.append((f"C. Audios [{i+1}-{i+len(chunk)}]", SUB_BATCH_AUDIOS, chunk))
+
+    # D. Videos — uno a uno
+    for i, vid in enumerate(videos, 1):
+        sub_batches.append((f"D. Video [{i}]", SUB_BATCH_VIDEOS, [vid]))
+
+    return sub_batches
+
+
+def discover_and_classify() -> tuple[list[tuple[str, int, list[dict]]], dict]:
+    """Fase 1 del Protocolo V1.2: Descubre todos los archivos de las carpetas
+    permitidas y los clasifica en sub-lotes por tipo con orden estricto."""
+    log.header("FASE 1: Descubrimiento y Clasificación (Protocolo V1.2)")
     seen_paths = set()
-    batches = []
-    total_files = 0
+    all_files = []
 
     for batch_name, directory, recursive in BATCH_PRIORITY_ORDER:
         files = _scan_single_dir(directory, recursive, seen_paths)
         if files:
-            batches.append((batch_name, files))
-            total_files += len(files)
             size_mb = sum(f["size_bytes"] for f in files) / (1024 * 1024)
-            log.info(f"  Lote [{batch_name}]: {len(files)} archivos ({size_mb:.1f} MB)")
+            log.info(f"  Carpeta [{batch_name}]: {len(files)} archivos ({size_mb:.1f} MB)")
+            all_files.extend(files)
 
-    log.success(f"Descubiertos {total_files} archivos en {len(batches)} lotes")
+    if not all_files:
+        log.warning("No se encontraron archivos para analizar.")
+        return [], {}
 
     # Desglose global por tipo
     by_type = {}
-    for _, files in batches:
-        for f in files:
-            by_type[f["type"]] = by_type.get(f["type"], 0) + 1
+    for f in all_files:
+        by_type[f["type"]] = by_type.get(f["type"], 0) + 1
+
+    log.success(f"Descubiertos {len(all_files)} archivos en {len(BATCH_PRIORITY_ORDER)} carpetas")
     for t, c in sorted(by_type.items()):
         log.info(f"  {t}: {c} archivos")
 
-    return batches
+    # Clasificar por tipo con sub-lotes
+    log.header("Clasificación por Tipo (Orden Estricto V1.2)")
+    log.info("  Prioridad: A. Texto/PDF → B. Imágenes (×10) → C. Audios (×3) → D. Videos (×1)")
+    sub_batches = _classify_by_type(all_files)
+    log.success(f"Organizados en {len(sub_batches)} sub-lotes de procesamiento")
+
+    return sub_batches, by_type
 
 
 def _load_processed_hashes() -> tuple[set, set]:
@@ -1008,9 +1065,11 @@ def _process_single_file(file_info: dict, client, tracker, all_metadata: list) -
 
 def main():
     """Ejecuta el pipeline completo del Analista Proactivo Forense.
-    Procesamiento por lotes (carpetas) con orden de prioridad definido."""
+    Protocolo de Ingesta Crítica V1.2:
+      A. Texto/PDF (< 15MB) → B. Imágenes (×10) → C. Audios (×3) → D. Videos (×1)
+    Dentro de cada categoría: menor a mayor peso en KB."""
 
-    log.header("ANALISTA PROACTIVO FORENSE — MUNINN v2.1 (Lotes)")
+    log.header("ANALISTA PROACTIVO FORENSE — MUNINN V1.2 (Ingesta Crítica)")
     start_time = time.time()
 
     # ── Validar API Key ──
@@ -1027,9 +1086,9 @@ def main():
     init_proactive_table()
     log.success("Tabla 'hallazgos_proactivos' verificada en muninn_memory.db")
 
-    # ── Fase 1: Descubrimiento por lotes ──
-    batches = discover_files_by_batch()
-    if not batches:
+    # ── Fase 1: Descubrimiento y Clasificación ──
+    sub_batches, by_type = discover_and_classify()
+    if not sub_batches:
         log.warning("No se encontraron archivos para analizar.")
         return
 
@@ -1039,7 +1098,8 @@ def main():
     log.info(f"  Hashes en BD (files): {len(db_hashes)}")
     log.info(f"  Hashes en hallazgos proactivos: {len(proactive_hashes)}")
 
-    # ── Fase 3: Procesamiento por lotes ──
+    # ── Fase 3: Procesamiento por sub-lotes tipificados ──
+    log.header("FASE 3: Procesamiento por Sub-Lotes (Protocolo V1.2)")
     tracker = PatternTracker()
     all_metadata = load_metadata_json()
     global_processed = 0
@@ -1049,40 +1109,50 @@ def main():
     global_skipped = 0
     global_idx = 0
 
-    total_files_all = sum(len(files) for _, files in batches)
+    total_sub_batches = len(sub_batches)
+    total_files_all = sum(len(files) for _, _, files in sub_batches)
 
-    for batch_num, (batch_name, batch_files) in enumerate(batches, 1):
-        # Filtrar archivos ya procesados en este lote
-        pending = filter_batch(batch_files, db_hashes, proactive_hashes)
-        skipped = len(batch_files) - len(pending)
+    for lote_num, (lote_name, lote_capacity, lote_files) in enumerate(sub_batches, 1):
+        # Filtrar archivos ya procesados
+        pending = filter_batch(lote_files, db_hashes, proactive_hashes)
+        skipped = len(lote_files) - len(pending)
         global_skipped += skipped
 
         if not pending:
-            log.info(f"  Lote [{batch_name}]: todos los archivos ya procesados. Saltando.")
+            log.info(f"  Sub-Lote [{lote_name}]: ya procesado. Saltando.")
             continue
 
-        log.header(f"LOTE {batch_num}/{len(batches)}: {batch_name} ({len(pending)} pendientes, {skipped} omitidos)")
+        # ═══ FILTRO DE CALIDAD V1.2 ═══
+        print()
+        print(f"{'='*60}")
+        print(f"  Iniciando Lote {lote_num}: {lote_name}")
+        print(f"  {len(pending)} archivos pendientes — Esperando balance de RAM")
+        print(f"{'='*60}")
+        time.sleep(2)  # Pausa breve para estabilización de RAM
 
-        batch_approved = 0
-        batch_rejected = 0
-        batch_errors = 0
+        log.header(f"SUB-LOTE {lote_num}/{total_sub_batches}: {lote_name} "
+                   f"({len(pending)} pendientes, {skipped} omitidos)")
+
+        lote_approved = 0
+        lote_rejected = 0
+        lote_errors = 0
 
         for idx, file_info in enumerate(pending, 1):
             global_idx += 1
             size_kb = file_info["size_bytes"] / 1024
             log.progress(global_idx, total_files_all - global_skipped,
-                         f"[{batch_name}] {file_info['filename']} ({size_kb:.0f}KB)")
+                         f"[{lote_name}] {file_info['filename']} ({size_kb:.0f}KB)")
 
             result = _process_single_file(file_info, client, tracker, all_metadata)
 
             if result == "aprobado":
-                batch_approved += 1
+                lote_approved += 1
                 global_approved += 1
             elif result == "rechazado":
-                batch_rejected += 1
+                lote_rejected += 1
                 global_rejected += 1
             else:
-                batch_errors += 1
+                lote_errors += 1
                 global_errors += 1
 
             global_processed += 1
@@ -1091,20 +1161,19 @@ def main():
             if global_idx % 10 == 0:
                 save_metadata_json(all_metadata)
 
-            # Rate limiting con pausa larga cada BATCH_SIZE
-            if global_idx % BATCH_SIZE == 0:
-                print()  # New line
-                log.info(f"Pausa de {BATCH_PAUSE}s (global: {global_idx}, lote: {idx}/{len(pending)})")
-                save_metadata_json(all_metadata)
-                time.sleep(BATCH_PAUSE)
-            else:
-                time.sleep(API_DELAY_SECONDS)
+            # Rate limiting
+            time.sleep(API_DELAY_SECONDS)
 
-        # Resumen del lote
+        # Resumen del sub-lote
         print()
-        log.success(f"  Lote [{batch_name}] completado: "
-                    f"{batch_approved} aprobados, {batch_rejected} rechazados, {batch_errors} errores")
+        log.success(f"  Sub-Lote [{lote_name}] completado: "
+                    f"{lote_approved} aprobados, {lote_rejected} rechazados, {lote_errors} errores")
         save_metadata_json(all_metadata)
+
+        # Pausa inter-lote para recuperación de recursos
+        if lote_num < total_sub_batches:
+            log.info(f"  Pausa inter-lote de {BATCH_PAUSE}s para recuperación de recursos...")
+            time.sleep(BATCH_PAUSE)
 
     # ── Guardar metadata final ──
     save_metadata_json(all_metadata)
@@ -1129,9 +1198,9 @@ def main():
 
     # ── Resumen Final ──
     elapsed = time.time() - start_time
-    log.header("RESUMEN DE EJECUCIÓN")
+    log.header("RESUMEN DE EJECUCIÓN (Protocolo V1.2)")
     log.info(f"Tiempo total de ejecución:   {elapsed / 60:.1f} minutos")
-    log.info(f"Lotes procesados:            {len(batches)}")
+    log.info(f"Sub-lotes procesados:        {total_sub_batches}")
     log.info(f"Archivos procesados:         {global_processed}")
     log.info(f"Archivos omitidos (previos): {global_skipped}")
     log.info(f"Hallazgos aprobados:         {global_approved} (Filtro Estratégico: APROBADO)")
@@ -1144,7 +1213,7 @@ def main():
         for rp in reports_generated:
             log.info(f"  ▸ {os.path.basename(rp)}")
 
-    log.success("Analista Proactivo Forense v2.1 finalizado correctamente.")
+    log.success("Analista Proactivo Forense V1.2 finalizado correctamente.")
 
 
 if __name__ == "__main__":
