@@ -89,11 +89,13 @@ IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.heic'}
 AUDIO_EXTS = {'.m4a', '.mp3', '.wav', '.ogg', '.flac'}
 VIDEO_EXTS = {'.mp4', '.mov'}
 DOC_EXTS = {'.pdf'}
-TEXT_EXTS = {'.md', '.txt'}  # Texto plano y Markdown
-ALL_SUPPORTED = IMAGE_EXTS | AUDIO_EXTS | VIDEO_EXTS | DOC_EXTS | TEXT_EXTS
+# NOTA: .md, .py, .json se leen SOLO localmente — NUNCA se suben a la API
+LOCAL_ONLY_EXTS = {'.md', '.txt', '.py', '.json'}  # Lectura local, sin carga a Gemini
+ALL_SUPPORTED = IMAGE_EXTS | AUDIO_EXTS | VIDEO_EXTS | DOC_EXTS  # Solo tipos subibles a API
 
-# ── Protocolo de Ingesta Crítica V1.3 ──
-# Orden estricto: A. Texto/MD → B. PDF(<15MB) → C. Imágenes(×20) → D. Audios(×3) → E. Videos(×1)
+# ── Protocolo de Ingesta Crítica V1.3 (Mimetype-Safe) ──
+# Orden estricto: A. PDF(<15MB) → B. Imágenes(×20) → C. Audios(×3) → D. Videos(×1)
+# .md/.py/.json: lectura local exclusiva, sin carga a la API de Gemini
 # Dentro de cada categoría: menor a mayor peso en KB
 MAX_DOC_SIZE_BYTES = 15 * 1024 * 1024  # 15MB — PDFs mayores se saltan
 SUB_BATCH_IMAGES = 20    # Imágenes en lotes de 20
@@ -104,7 +106,7 @@ SUB_BATCH_VIDEOS = 1     # Videos uno a uno (pesados)
 GEMINI_MODEL_HEAVY = "gemini-pro-latest"     # Audio y video (razonamiento profundo)
 GEMINI_MODEL_FAST = "gemini-flash-latest"    # Imágenes y documentos (rápido)
 # Rate limiting y resiliencia ante 429 (Resource Exhausted)
-API_DELAY_SECONDS = 4      # Pausa normal entre llamadas
+API_DELAY_SECONDS = 15     # 15s entre cada archivo para evitar error 429 de quota
 RETRY_DELAY_429 = 65       # 65s = ciclo completo de quota API antes de reintentar
 MAX_RETRIES_429 = 3        # Reintentos máximos por archivo ante 429
 BATCH_PAUSE = 30           # Pausa entre sub-lotes (segundos)
@@ -327,7 +329,7 @@ def extract_media_metadata(filepath: str) -> dict:
 
 
 def get_file_type(filepath: str) -> str | None:
-    """Determina el tipo de archivo por extensión."""
+    """Determina el tipo de archivo por extensión. Solo tipos subibles a la API."""
     ext = os.path.splitext(filepath)[1].lower()
     if ext in IMAGE_EXTS:
         return "imagen"
@@ -337,8 +339,7 @@ def get_file_type(filepath: str) -> str | None:
         return "video"
     elif ext in DOC_EXTS:
         return "documento"
-    elif ext in TEXT_EXTS:
-        return "texto"
+    # .md, .py, .json = LOCAL_ONLY_EXTS — no se procesan en este scanner
     return None
 
 
@@ -408,12 +409,12 @@ def _scan_single_dir(directory: str, recursive: bool, seen_paths: set) -> list[d
 
 
 def _classify_by_type(all_files: list[dict]) -> list[tuple[str, int, list[dict]]]:
-    """Clasifica archivos por tipo y los organiza en sub-lotes con orden estricto V1.3:
-    A. Texto/MD → B. PDFs (< 15MB) → C. Imágenes (lotes de 20) → D. Audios (lotes de 3) → E. Videos.
+    """Clasifica archivos por tipo en sub-lotes (Mimetype-Safe V1.3):
+    A. PDFs (< 15MB) → B. Imágenes (lotes de 20) → C. Audios (lotes de 3) → D. Videos.
+    .md/.py/.json excluidos de la carga a API (LOCAL_ONLY_EXTS).
     Dentro de cada categoría: ordenados por tamaño ascendente (menor a mayor KB)."""
 
-    # Separar por tipo
-    texts = [f for f in all_files if f["type"] == "texto"]
+    # Separar por tipo (solo tipos subibles a API)
     docs = [f for f in all_files if f["type"] == "documento"
             and f["size_bytes"] < MAX_DOC_SIZE_BYTES
             and f["filename"] not in SKIP_FILES]
@@ -428,7 +429,6 @@ def _classify_by_type(all_files: list[dict]) -> list[tuple[str, int, list[dict]]
                      and f["filename"] not in SKIP_FILES]
 
     # Ordenar cada categoría por tamaño ascendente (menor a mayor KB)
-    texts.sort(key=lambda f: f["size_bytes"])
     docs.sort(key=lambda f: f["size_bytes"])
     images.sort(key=lambda f: f["size_bytes"])
     audios.sort(key=lambda f: f["size_bytes"])
@@ -447,27 +447,23 @@ def _classify_by_type(all_files: list[dict]) -> list[tuple[str, int, list[dict]]
     # Construir sub-lotes: (nombre_sublote, capacidad, archivos)
     sub_batches = []
 
-    # A. Texto/Markdown — todos en un lote
-    if texts:
-        sub_batches.append(("A. Texto/MD", len(texts), texts))
-
-    # B. Documentos/PDFs (< 15MB) — en un solo lote
+    # A. Documentos/PDFs (< 15MB)
     if docs:
-        sub_batches.append(("B. PDF (< 15MB)", len(docs), docs))
+        sub_batches.append(("A. PDF (< 15MB)", len(docs), docs))
 
-    # C. Imágenes — en lotes de SUB_BATCH_IMAGES (20)
+    # B. Imágenes — en lotes de SUB_BATCH_IMAGES (20)
     for i in range(0, len(images), SUB_BATCH_IMAGES):
         chunk = images[i:i + SUB_BATCH_IMAGES]
-        sub_batches.append((f"C. Imágenes [{i+1}-{i+len(chunk)}]", SUB_BATCH_IMAGES, chunk))
+        sub_batches.append((f"B. Imágenes [{i+1}-{i+len(chunk)}]", SUB_BATCH_IMAGES, chunk))
 
-    # D. Audios — en lotes de SUB_BATCH_AUDIOS (3)
+    # C. Audios — en lotes de SUB_BATCH_AUDIOS (3)
     for i in range(0, len(audios), SUB_BATCH_AUDIOS):
         chunk = audios[i:i + SUB_BATCH_AUDIOS]
-        sub_batches.append((f"D. Audios [{i+1}-{i+len(chunk)}]", SUB_BATCH_AUDIOS, chunk))
+        sub_batches.append((f"C. Audios [{i+1}-{i+len(chunk)}]", SUB_BATCH_AUDIOS, chunk))
 
-    # E. Videos — uno a uno
+    # D. Videos — uno a uno
     for i, vid in enumerate(videos, 1):
-        sub_batches.append((f"E. Video [{i}]", SUB_BATCH_VIDEOS, [vid]))
+        sub_batches.append((f"D. Video [{i}]", SUB_BATCH_VIDEOS, [vid]))
 
     return sub_batches
 
@@ -500,8 +496,9 @@ def discover_and_classify() -> tuple[list[tuple[str, int, list[dict]]], dict]:
         log.info(f"  {t}: {c} archivos")
 
     # Clasificar por tipo con sub-lotes
-    log.header("Clasificación por Tipo (Orden Estricto V1.3)")
-    log.info("  Prioridad: A. Texto/MD → B. PDF(<15MB) → C. Imágenes(×20) → D. Audios(×3) → E. Videos(×1)")
+    log.header("Clasificación por Tipo (Mimetype-Safe V1.3)")
+    log.info("  Prioridad: A. PDF(<15MB) → B. Imágenes(×20) → C. Audios(×3) → D. Videos(×1)")
+    log.info("  Excluidos de API: .md, .py, .json (lectura local exclusiva)")
     sub_batches = _classify_by_type(all_files)
     log.success(f"Organizados en {len(sub_batches)} sub-lotes de procesamiento")
 
