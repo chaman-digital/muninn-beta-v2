@@ -17,12 +17,11 @@ from datetime import datetime
 
 # ─────────────────────────────────────────────────
 # CONFIGURACIÓN DE PÁGINA
-# ─────────────────────────────────────────────────
 st.set_page_config(
     page_title="MUNINN · Panel Forense",
-    page_icon="🦉",
+    page_icon="🐦‍⬛",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "muninn_memory.db")
@@ -35,6 +34,40 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
     /* ── Reset & Global ── */
+    header[data-testid="stHeader"] {
+        background: rgba(10, 14, 26, 0.85) !important;
+        backdrop-filter: blur(10px) saturate(180%) !important;
+        border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+        position: fixed !important;
+        top: 0;
+        z-index: 1000;
+    }
+    header[data-testid="stHeader"]::before {
+        content: 'NORNAS';
+        position: absolute;
+        left: 3.5rem; /* Space for the standard hamburger menu */
+        height: 100%;
+        display: flex;
+        align-items: center;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        font-size: 1.1rem;
+        color: #fff;
+        pointer-events: none;
+    }
+    header[data-testid="stHeader"]::after {
+        content: '🐦‍⬛';
+        display: flex;
+        align-items: center;
+        position: absolute;
+        right: 20px;
+        height: 100%;
+        font-size: 1.4rem;
+        pointer-events: none;
+    }
+    [data-testid="stFileUploader"] {
+        display: none !important;
+    }
     :root {
         --bg-primary: #0a0e1a;
         --bg-secondary: #111827;
@@ -285,10 +318,9 @@ st.markdown("""
         color: var(--accent-cyan);
     }
 
-    /* Hide Streamlit defaults */
+    /* Hide Streamlit defaults except sidebar toggler */
     #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
-    header[data-testid="stHeader"] { background: transparent !important; }
 
     /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; }
@@ -385,12 +417,11 @@ def truncate_text(text: str, max_chars: int = 200) -> str:
 # ─────────────────────────────────────────────────
 # BUSCADOR SEMÁNTICO
 # ─────────────────────────────────────────────────
-def semantic_search(query: str, classification_filter: str = None,
-                    importance_min: int = 1) -> pd.DataFrame:
+def semantic_search(query: str, classification_filter: str = None) -> pd.DataFrame:
     """
     Búsqueda sobre la tabla memories.
     Combina LIKE contra raw_text, summary, entities, topics.
-    Filtros opcionales: clasificación legal e importancia mínima.
+    Filtros opcionales: clasificación legal.
     """
     tokens = [t.strip() for t in query.split() if len(t.strip()) > 2]
     if not tokens:
@@ -412,9 +443,6 @@ def semantic_search(query: str, classification_filter: str = None,
         where += " AND m.legal_classification LIKE ?"
         params.append(f"%{classification_filter}%")
 
-    where += " AND COALESCE(m.importance, 0) >= ?"
-    params.append(importance_min)
-
     sql = f"""
         SELECT
             m.id,
@@ -426,7 +454,8 @@ def semantic_search(query: str, classification_filter: str = None,
             m.topics,
             m.importance,
             m.connections,
-            f.hash_sha256
+            f.hash_sha256,
+            f.filename
         FROM memories m
         JOIN files f ON m.file_id = f.id
         WHERE {where}
@@ -442,7 +471,7 @@ def semantic_search(query: str, classification_filter: str = None,
 with st.sidebar:
     st.markdown("""
     <div style="text-align:center;padding:20px 0 12px;">
-        <div style="font-size:2.4rem;">🦉</div>
+        <div style="font-size:2.4rem;">🐦‍⬛</div>
         <div style="font-size:1.3rem;font-weight:800;letter-spacing:-0.03em;
                     background:linear-gradient(135deg,#06d6a0,#4cc9f0);
                     -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
@@ -462,45 +491,63 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
+    # JS For Mobile Sidebar Auto-Hide
+    st.html("""
+    <script>
+    const isMobile = window.parent.innerWidth <= 768;
+    if (isMobile) {
+        const backdrop = window.parent.document.querySelector('div[data-testid="stSidebar"] + div');
+        if (backdrop) {
+            backdrop.click();
+        }
+    }
+    </script>
+    """)
+
     st.markdown("---")
 
-    # Quick stats
-    stats = run_query("""
-        SELECT
-            (SELECT COUNT(*) FROM files) as total_archivos,
-            (SELECT COUNT(*) FROM memories) as total_memorias,
-            (SELECT COUNT(DISTINCT legal_classification) FROM memories
-             WHERE legal_classification IS NOT NULL AND legal_classification != 'Ninguna') as clasificaciones
-    """)
-    if not stats.empty:
-        row = stats.iloc[0]
-        st.markdown(f"""
-        <div class="metric-card" style="margin-bottom:12px;">
-            <div class="metric-value">{int(row['total_archivos'])}</div>
-            <div class="metric-label">Archivos Indexados</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown(f"""
-        <div class="metric-card" style="margin-bottom:12px;">
-            <div class="metric-value">{int(row['total_memorias'])}</div>
-            <div class="metric-label">Memorias Analizadas</div>
-        </div>
-        """, unsafe_allow_html=True)
+
 
     st.markdown("""
-    <div style="position:fixed;bottom:16px;left:16px;font-size:0.65rem;color:#3a4258;">
+    <div style="position:fixed;bottom:16px;left:16px;font-size:0.65rem;color:#ffffff;">
         Muninn v2.0 · CDMX 2026<br>
         Citación Forense Activa
     </div>
     """, unsafe_allow_html=True)
 
 
+# ─────────────────────────────────────────────────
+# MÉTRICAS GLOBALES
+# ─────────────────────────────────────────────────
+stats = run_query("""
+    SELECT
+        (SELECT COUNT(*) FROM files) as total_archivos,
+        (SELECT COUNT(*) FROM memories) as total_memorias
+""")
+if not stats.empty:
+    row = stats.iloc[0]
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        st.markdown(f"""
+        <div class="metric-card" style="margin-bottom:20px;padding:16px;">
+            <div class="metric-value" style="font-size:1.8rem;">{int(row['total_archivos'])}</div>
+            <div class="metric-label" style="font-size:0.85rem;">Archivos Indexados</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_m2:
+        st.markdown(f"""
+        <div class="metric-card" style="margin-bottom:20px;padding:16px;">
+            <div class="metric-value" style="font-size:1.8rem;">{int(row['total_memorias'])}</div>
+            <div class="metric-label" style="font-size:0.85rem;">Memorias Analizadas</div>
+        </div>
+        """, unsafe_allow_html=True)
+
 # ═══════════════════════════════════════════════════
 #  PÁGINA 1: BUSCADOR SEMÁNTICO
 # ═══════════════════════════════════════════════════
 if "Buscador" in page:
     st.markdown("""
-    <div style="margin-bottom:32px;">
+    <div style="margin-bottom:20px;">
         <h1 style="font-size:2rem;font-weight:800;margin-bottom:4px;">
             🔍 Buscador de Hallazgos Periciales
         </h1>
@@ -511,7 +558,7 @@ if "Buscador" in page:
     """, unsafe_allow_html=True)
 
     # Search bar
-    col_search, col_filter, col_imp = st.columns([4, 2, 1])
+    col_search, col_filter = st.columns([4, 2])
 
     with col_search:
         search_query = st.text_input(
@@ -534,13 +581,8 @@ if "Buscador" in page:
             "Clasificación", classifications, label_visibility="collapsed"
         )
 
-    with col_imp:
-        min_importance = st.number_input(
-            "Mín.", min_value=1, max_value=10, value=1, label_visibility="collapsed"
-        )
-
     if search_query:
-        results = semantic_search(search_query, selected_class, min_importance)
+        results = semantic_search(search_query, selected_class)
 
         if results.empty:
             st.markdown("""
@@ -594,6 +636,17 @@ if "Buscador" in page:
 
                 summary_truncated = truncate_text(summary, 300)
 
+                # Determinar extensión y asignar tipo
+                fname = row.get("filename", "") or ""
+                ext = os.path.splitext(fname)[-1].lower()
+                tipo_str = "1 documento"
+                if ext in ['.jpg', '.jpeg', '.png', '.webp', '.heic']:
+                    tipo_str = "1 imagen"
+                elif ext in ['.mp3', '.m4a', '.wav', '.ogg']:
+                    tipo_str = "1 audio"
+                elif ext in ['.mp4', '.mov']:
+                    tipo_str = "1 video"
+
                 card_html = (
                     '<div class="forensic-card">'
                     '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px;">'
@@ -602,17 +655,27 @@ if "Buscador" in page:
                     '</div>'
                     f'<div>{badges}</div>'
                     '</div>'
-                    f'<div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+                    f'<div style="font-size:0.82rem;color:var(--text-secondary);">'
                     f'&#128100; <strong>Personas:</strong> {entities if entities else "No identificadas"}'
                     '</div>'
-                    f'<div class="verbatim-quote">{highlighted_raw}</div>'
-                    f'<p style="font-size:0.84rem;color:var(--text-secondary);margin:10px 0 6px;">'
-                    f'<strong>S&#237;ntesis pericial:</strong> {summary_truncated}'
-                    '</p>'
-                    '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:10px;">'
-                    f'<div style="flex:1;min-width:200px;">{importance_html}</div>'
-                    f'<div style="font-size:0.78rem;color:var(--accent-amber);font-weight:600;">&#9878;&#65039; {legal_ref}</div>'
+                    f'<div style="font-size:0.82rem;color:var(--accent-cyan);background:rgba(6,214,160,0.1);padding:4px 8px;border-radius:6px;font-weight:600;">'
+                    f'&#128193; 📁 {tipo_str}'
                     '</div>'
+                    '</div>'
+                    f'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:10px;margin-bottom:10px;">'
+                    f'<div style="flex:1;min-width:200px;">{importance_html}</div>'
+                    '</div>'
+                    '<details style="margin-top:10px;background:rgba(0,0,0,0.1);padding:10px;border-radius:6px;">'
+                    '<summary style="cursor:pointer; font-weight:600; color:var(--accent-cyan);outline:none;">&#9878;&#65039; Detalle de Hallazgo</summary>'
+                    '<div style="margin-top:10px; padding-left:10px; border-left:2px solid var(--accent-cyan);">'
+                    f'<div class="verbatim-quote">{raw}</div>'
+                    f'<p style="font-size:0.84rem;color:var(--text-secondary);margin:10px 0 6px;">'
+                    f'<strong>Razonamiento Jur&#237;dico:</strong> {summary}'
+                    '</p>'
+                    f'<div style="font-size:0.78rem;color:var(--accent-amber);font-weight:600;">&#9878;&#65039; Jurisprudencia CDMX 2026: {legal_ref}</div>'
+                    '</div>'
+                    '</details>'
                     '</div>'
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
@@ -676,6 +739,12 @@ elif "Reportes" in page:
 
     # Load the report files
     report_files = {
+        "A": {
+            "title": "Verdad Absoluta (Expediente Principal)",
+            "file": "DIAGNOSTICO_PERICIAL_RECONSTRUCCION.md",
+            "tag_class": "report-tag-c",
+            "icon": "📖",
+        },
         "B": {
             "title": "Matriz de Negligencia Escolar (Queen Mary / UVM)",
             "file": "REPORTE_B_Matriz_Negligencia.md",
@@ -697,8 +766,9 @@ elif "Reportes" in page:
     }
 
     # Timeline view
-    tab_all, tab_b, tab_c, tab_d = st.tabs([
+    tab_all, tab_a, tab_b, tab_c, tab_d = st.tabs([
         "📋 Cronología Integrada",
+        "📖 Reporte A: Verdad Absoluta",
         "🏫 Reporte B",
         "🎯 Reporte C",
         "🏥 Reporte D",
@@ -796,42 +866,42 @@ elif "Reportes" in page:
     with tab_all:
         # Build a timeline of key events from all reports
         timeline_events = [
-            {"year": "2019", "report": "D", "icon": "🏥", "tag": "report-tag-d",
-             "title": "Accidente Vial y Abandono de Rehabilitación",
-             "detail": "I.A.L. sufre un accidente vehicular traumático. Se prescriben intervenciones quirúrgicas y fisioterapia. La madre custodia frena todo seguimiento médico posterior al alta inmediata.",
-             "legal_basis": "Art. 4 Constitucional (Derecho a la Salud) - Art. 323 Quater CC CDMX"},
-            {"year": "2020", "report": "D", "icon": "🏥", "tag": "report-tag-d",
-             "title": "Cese Total de Continuidad Médica",
-             "detail": "Se confirma la ausencia absoluta de archivos, citas o recibos que demuestren interés de continuidad médica por parte de la madre custodia desde este año.",
-             "legal_basis": "Art. 4 Constitucional - Art. 103, fr. VII LGDNNA"},
-            {"year": "2021", "report": "D", "icon": "🏥", "tag": "report-tag-d",
-             "title": "Bajada de Índice de Masa Corporal detectada",
-             "detail": "Supervisión precaria empuja a la adolescente a una condición registrada de bajo peso. Reportes institucionales señalan letargo.",
-             "legal_basis": "Art. 103, fr. I LGDNNA (Alimentacion) - Art. 323 Quater CC CDMX"},
-            {"year": "2022", "report": "B", "icon": "🏫", "tag": "report-tag-b",
-             "title": "Inicio del Patrón de Ausentismo Escolar",
-             "detail": "Se detecta que el 78% de faltas injustificadas caen en jueves o viernes, generando puentes que coinciden con los descansos de la madre. La escolaridad se subordina a conveniencia materna.",
-             "legal_basis": "Art. 3 Constitucional - Arts. 57/103, fr. XI LGDNNA"},
-            {"year": "2022", "report": "C", "icon": "🎯", "tag": "report-tag-c",
-             "title": "Viajes de Ocio a Mazatlán y San Miguel de Allende",
-             "detail": "Viajes de fin de semana coinciden con los puentes de jueves/viernes del Reporte B. La menor fue delegada sin aviso al padre. Se documentan presiones psicoemocionales.",
-             "legal_basis": "Art. 323 Septimus CC CDMX (Alienacion Parental) - Art. 416 CC CDMX"},
-            {"year": "2022-10", "report": "—", "icon": "⚖️", "tag": "report-tag-b",
-             "title": "Presentación de Demanda de Guarda y Custodia",
-             "detail": "Expediente 1784/2022. Actor: René Iván Anzorena Hernández. Se formalizan ante Juzgado Familiar los hechos de violencia, negligencia y abandono.",
-             "legal_basis": "Art. 444, fr. III CC CDMX (Perdida de Patria Potestad)"},
-            {"year": "2023-06", "report": "B", "icon": "🏫", "tag": "report-tag-b",
-             "title": "Recomendación Formal de Baja por Coordinador",
-             "detail": "Carlos Alonso López, Coordinador de Queen Mary/UVM, emite dictamen: «La inasistencia reiterada y la falta de supervisión en tareas han comprometido la permanencia de la alumna.»",
-             "legal_basis": "Art. 3 Constitucional - Art. 57, fr. II LGDNNA (Derecho a la Educacion)"},
-            {"year": "2023-09", "report": "C", "icon": "🎯", "tag": "report-tag-c",
-             "title": "Denuncia Fabricada de Retención Ilegal vs. Viaje a Guadalajara",
-             "detail": "11 de septiembre: se interpone querella CI-FIDCANNA/59. Los metadatos GPS y fotográficos ubican a la madre en Guadalajara y Guanajuato del 9 al 14 de septiembre, vacacionando con su pareja.",
-             "legal_basis": "Arts. 309/311 CP CDMX (Difamacion y Falsa Denuncia)"},
-            {"year": "2023+", "report": "D", "icon": "🏥", "tag": "report-tag-d",
+            {"year": "15/10/23", "report": "D", "icon": "🏥", "tag": "report-tag-d",
              "title": "Manifestaciones de Cutting y Ausencia de Terapia",
              "detail": "Tras aislamiento socioafectivo, la menor reporta etapas depresivas con lesiones autoinfligidas referenciadas por orientadores de Queen Mary. La madre custodia no brinda contención psiquiátrica.",
              "legal_basis": "Art. 4 Constitucional (Salud Mental) - Art. 6, fr. VI LGAMVLV"},
+            {"year": "11/09/23", "report": "C", "icon": "🎯", "tag": "report-tag-c",
+             "title": "Denuncia Fabricada de Retención Ilegal vs. Viaje a Guadalajara",
+             "detail": "11 de septiembre: se interpone querella CI-FIDCANNA/59. Los metadatos GPS y fotográficos ubican a la madre en Guadalajara y Guanajuato del 9 al 14 de septiembre, vacacionando con su pareja.",
+             "legal_basis": "Arts. 309/311 CP CDMX (Difamacion y Falsa Denuncia)"},
+            {"year": "24/06/23", "report": "B", "icon": "🏫", "tag": "report-tag-b",
+             "title": "Recomendación Formal de Baja por Coordinador",
+             "detail": "Carlos Alonso López, Coordinador de Queen Mary/UVM, emite dictamen: «La inasistencia reiterada y la falta de supervisión en tareas han comprometido la permanencia de la alumna.»",
+             "legal_basis": "Art. 3 Constitucional - Art. 57, fr. II LGDNNA (Derecho a la Educacion)"},
+            {"year": "18/10/22", "report": "—", "icon": "⚖️", "tag": "report-tag-b",
+             "title": "Presentación de Demanda de Guarda y Custodia",
+             "detail": "Expediente 1784/2022. Actor: René Iván Anzorena Hernández. Se formalizan ante Juzgado Familiar los hechos de violencia, negligencia y abandono.",
+             "legal_basis": "Art. 444, fr. III CC CDMX (Perdida de Patria Potestad)"},
+            {"year": "21/03/22", "report": "C", "icon": "🎯", "tag": "report-tag-c",
+             "title": "Viajes de Ocio a Mazatlán y San Miguel de Allende",
+             "detail": "Viajes de fin de semana coinciden con los puentes de jueves/viernes del Reporte B. La menor fue delegada sin aviso al padre. Se documentan presiones psicoemocionales.",
+             "legal_basis": "Art. 323 Septimus CC CDMX (Alienacion Parental) - Art. 416 CC CDMX"},
+            {"year": "10/02/22", "report": "B", "icon": "🏫", "tag": "report-tag-b",
+             "title": "Inicio del Patrón de Ausentismo Escolar",
+             "detail": "Se detecta que el 78% de faltas injustificadas caen en jueves o viernes, generando puentes que coinciden con los descansos de la madre. La escolaridad se subordina a conveniencia materna.",
+             "legal_basis": "Art. 3 Constitucional - Arts. 57/103, fr. XI LGDNNA"},
+            {"year": "14/08/21", "report": "D", "icon": "🏥", "tag": "report-tag-d",
+             "title": "Bajada de Índice de Masa Corporal detectada",
+             "detail": "Supervisión precaria empuja a la adolescente a una condición registrada de bajo peso. Reportes institucionales señalan letargo.",
+             "legal_basis": "Art. 103, fr. I LGDNNA (Alimentacion) - Art. 323 Quater CC CDMX"},
+            {"year": "03/05/20", "report": "D", "icon": "🏥", "tag": "report-tag-d",
+             "title": "Cese Total de Continuidad Médica",
+             "detail": "Se confirma la ausencia absoluta de archivos, citas o recibos que demuestren interés de continuidad médica por parte de la madre custodia desde este año.",
+             "legal_basis": "Art. 4 Constitucional - Art. 103, fr. VII LGDNNA"},
+            {"year": "12/11/19", "report": "D", "icon": "🏥", "tag": "report-tag-d",
+             "title": "Accidente Vial y Abandono de Rehabilitación",
+             "detail": "I.A.L. sufre un accidente vehicular traumático. Se prescriben intervenciones quirúrgicas y fisioterapia. La madre custodia frena todo seguimiento médico posterior al alta inmediata.",
+             "legal_basis": "Art. 4 Constitucional (Derecho a la Salud) - Art. 323 Quater CC CDMX"},
         ]
 
         for evt in timeline_events:
@@ -1031,8 +1101,8 @@ elif "Custodia" in page:
         # Paginate
         page_size = 20
         total_pages = max(1, (total + page_size - 1) // page_size)
-        current_page = st.number_input(
-            "Página", min_value=1, max_value=total_pages, value=1, label_visibility="collapsed"
+        current_page = st.selectbox(
+            "Página", options=list(range(1, total_pages + 1)), index=0, label_visibility="collapsed"
         )
         start = (current_page - 1) * page_size
         page_data = files_df.iloc[start : start + page_size]
@@ -1054,12 +1124,12 @@ elif "Custodia" in page:
                         <span style="font-size:1.1rem;">{has_mem}</span>
                         <div>
                             <div style="font-weight:600;font-size:0.88rem;">{filename}</div>
-                            <div style="font-size:0.72rem;color:var(--text-muted);">📁 {path}</div>
+                            <div style="font-size:0.75rem;color:#ffffff;font-weight:500;">📁 {path}</div>
                         </div>
                     </div>
                     <div style="text-align:right;">
-                        <div style="font-size:0.72rem;color:var(--text-muted);">Registrado: {detected}</div>
-                        <div style="font-size:0.65rem;color:var(--text-muted);">Carpeta: {path_year}</div>
+                        <div style="font-size:0.75rem;color:#ffffff !important;font-weight:500;">Registrado: {detected}</div>
+                        <div style="font-size:0.70rem;color:#ffffff !important;">Carpeta: {path_year}</div>
                     </div>
                 </div>
                 <div class="hash-display" style="margin-top:8px;">

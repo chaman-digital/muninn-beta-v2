@@ -27,6 +27,10 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+# Configurar salida estándar en UTF-8 para evitar errores de ascii codec con tildes
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 try:
     from google import genai
     from google.genai import types
@@ -105,9 +109,9 @@ SUB_BATCH_VIDEOS = 1     # Videos uno a uno (pesados)
 # Modelos Gemini — alias verificados con Google AI Studio (abril 2026)
 GEMINI_MODEL_HEAVY = "gemini-pro-latest"     # Audio y video (razonamiento profundo)
 GEMINI_MODEL_FAST = "gemini-flash-latest"    # Imágenes y documentos (rápido)
-# Rate limiting y resiliencia ante 429 (Resource Exhausted)
-API_DELAY_SECONDS = 15     # 15s entre cada archivo para evitar error 429 de quota
-RETRY_DELAY_429 = 65       # 65s = ciclo completo de quota API antes de reintentar
+# Rate limiting y resiliencia ante 429 (Resource Exhausted) Protocolo V1.5
+API_DELAY_SECONDS = 120    # 120s constante entre cada archivo
+RETRY_DELAY_429 = 120      # 120s constante ante error 429
 MAX_RETRIES_429 = 3        # Reintentos máximos por archivo ante 429
 BATCH_PAUSE = 30           # Pausa entre sub-lotes (segundos)
 
@@ -611,11 +615,11 @@ DETECCIÓN DE PATRONES — Analiza si este archivo contiene evidencia de CUALQUI
 
 3. DESACATO AL RÉGIMEN DE VISITAS: Impedimento, boicot u obstrucción de la convivencia paterno-filial. Incluye cambio de domicilio no notificado, cancelación unilateral de visitas, inaccesibilidad deliberada.
 
-4. VIOLENCIA VICARIA: Uso de la hija como instrumento para dañar psicológicamente al padre. Incluye manipulación del vínculo, mensajes que buscan generar culpa o rechazo.
+4. VIOLENCIA VICARIA E INDUCCIÓN TESTIMONIAL (Art. 323 Séptimus CC CDMX): Actos deliberados para destruir el vínculo con el padre. Identifica frases despectivas que degraden la figura paterna. ANÁLISIS SOBRE ANÁLISIS: Documenta proactivamente todo patrón de COACCIÓN o INDUCCIÓN TESTIMONIAL (instrucciones directas de la madre a la menor sobre qué debe decir ante autoridades o el Juez).
 
 5. ABANDONO MÉDICO/TERAPÉUTICO: Omisión de cuidados de salud, no dar seguimiento a tratamientos, ignorar señales de crisis emocional de la adolescente.
 
-6. ALIENACIÓN PARENTAL: Actos deliberados para transformar la conciencia de la menor y destruir el vínculo con el padre.
+6. VÍNCULO DE IDENTIDAD Y DESARTICULACIÓN DE COARTADA: Rastrea cualquier mención, metadata o imagen vinculada a "Hansel Oliver Rojas Figueroa". ANÁLISIS SOBRE ANÁLISIS: Identifica elementos que desmonten su fachada probatoria o alibi legal como 'asesor inmobiliario' y revelen el ocultamiento de convivencia/viajes.
 
 FILTRO ESTRATÉGICO OBLIGATORIO:
 Antes de registrar un hallazgo, evalúa: ¿Este hallazgo construye sustento legal eficiente para un juicio de Pérdida de Patria Potestad en la CDMX en 2026?
@@ -710,8 +714,8 @@ def analyze_with_gemini(filepath: str, file_type: str,
 
             if (is_429 or is_503) and attempt < MAX_RETRIES_429:
                 log.warning(f"  429/503 en {filename} (intento {attempt}/{MAX_RETRIES_429}). "
-                            f"Pausa de {RETRY_DELAY_429}s (ciclo completo de quota API)...")
-                time.sleep(RETRY_DELAY_429)  # 65s = ciclo completo de quota
+                            f"Pausa de {RETRY_DELAY_429}s...")
+                time.sleep(RETRY_DELAY_429)  # V1.5: Pausa constante de 120s
                 continue
             else:
                 log.error(f"  Error procesando {filename} (intento {attempt}): {e}")
@@ -1179,6 +1183,7 @@ def main():
                 global_errors += 1
 
             global_processed += 1
+            print(f" - Archivo {global_processed} de 2079 procesado")
 
             # Guardar metadata periódicamente
             if global_idx % 10 == 0:
