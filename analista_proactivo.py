@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 ╔════════════════════════════════════════════════════════════════════╗
 ║  ANALISTA PROACTIVO FORENSE — Muninn v2.0                        ║
@@ -46,9 +47,14 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from mutagen.mp4 import MP4
+    from mutagen import File as MutagenFile
 except ImportError:
-    MP4 = None
+    MutagenFile = None
+
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
 
 try:
     from tinytag import TinyTag
@@ -102,7 +108,7 @@ ALL_SUPPORTED = IMAGE_EXTS | AUDIO_EXTS | VIDEO_EXTS | DOC_EXTS  # Solo tipos su
 # .md/.py/.json: lectura local exclusiva, sin carga a la API de Gemini
 # Dentro de cada categoría: menor a mayor peso en KB
 MAX_DOC_SIZE_BYTES = 15 * 1024 * 1024  # 15MB — PDFs mayores se saltan
-SUB_BATCH_IMAGES = 20    # Imágenes en lotes de 20
+SUB_BATCH_IMAGES = 5     # Imágenes en lotes de 5 (Ruta 2 Pivot)
 SUB_BATCH_AUDIOS = 3     # Audios en lotes de 3
 SUB_BATCH_VIDEOS = 1     # Videos uno a uno (pesados)
 
@@ -113,7 +119,7 @@ GEMINI_MODEL_FAST = "gemini-flash-latest"    # Imágenes y documentos (rápido)
 API_DELAY_SECONDS = 120    # 120s constante entre cada archivo
 RETRY_DELAY_429 = 120      # 120s constante ante error 429
 MAX_RETRIES_429 = 3        # Reintentos máximos por archivo ante 429
-BATCH_PAUSE = 30           # Pausa entre sub-lotes (segundos)
+BATCH_PAUSE = 120          # Pausa entre sub-lotes (segundos) - Ruta 2 Pivot
 
 # Patrones objetivo de detección
 PATRON_DIFAMACION = "difamacion"
@@ -306,6 +312,42 @@ def _parse_gps(gps_info: dict) -> str | None:
         return None
 
 
+def extract_mutagen_metadata(filepath: str) -> dict:
+    """Extrae metadatos locales físicos usando mutagen para audio/video (Ruta 2)."""
+    metadata = {"fecha_creacion": None, "coordenadas_gps": None, "duracion_sg": None, "formato": None}
+    if MutagenFile:
+        try:
+            audio = MutagenFile(filepath)
+            if audio:
+                metadata["duracion_sg"] = str(getattr(audio.info, "length", ""))
+                
+                # Intentar leer GPS si está expuesto en tags
+                tags_str = str(audio.tags)
+                if "gps" in tags_str.lower():
+                    metadata["coordenadas_gps"] = "GPS Tag present"
+                    
+                metadata["formato"] = str(type(audio).__name__)
+        except Exception as e:
+            log.warning(f"Error Mutagen en {filepath}: {e}")
+    else:
+        return extract_media_metadata(filepath)
+            
+    return metadata
+
+def extract_pdf_texto(filepath: str) -> str:
+    """Extrae todo el texto estático de un PDF físicamente usando pypdf (Ruta 2)."""
+    texto = ""
+    if PdfReader:
+        try:
+            reader = PdfReader(filepath)
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    texto += t + " "
+        except Exception as e:
+            log.error(f"Error pypdf al extraer texto de {filepath}: {e}")
+    return texto.strip()
+
 def extract_media_metadata(filepath: str) -> dict:
     """Extrae metadatos de archivos de audio/video Apple."""
     metadata = {"fecha_creacion": None, "coordenadas_gps": None}
@@ -316,16 +358,6 @@ def extract_media_metadata(filepath: str) -> dict:
             tag = TinyTag.get(filepath)
             if tag.year:
                 metadata["fecha_creacion"] = str(tag.year)
-        except Exception:
-            pass
-
-    if MP4 and ext in {'.m4a', '.mov', '.mp4'}:
-        try:
-            mp4 = MP4(filepath)
-            if '\xa9day' in mp4:
-                metadata["fecha_creacion"] = str(mp4['\xa9day'][0])
-            if '©xyz' in mp4:
-                metadata["coordenadas_gps"] = str(mp4['©xyz'][0])
         except Exception:
             pass
 
@@ -653,36 +685,24 @@ def _select_model(file_type: str) -> str:
 
 
 def analyze_with_gemini(filepath: str, file_type: str,
-                        exif_meta: dict | None, client) -> dict | None:
-    """Envía un archivo a Gemini para análisis forense proactivo.
+                        exif_meta: dict | None, extracted_text: str, client) -> dict | None:
+    """Envía un análisis a Gemini para análisis forense proactivo bajo Ruta 2.
     Modelo seleccionado dinámicamente: Pro para audio/video, Flash para imagen/doc.
     Incluye manejo robusto de error 429 (Resource Exhausted) con reintentos."""
     filename = os.path.basename(filepath)
     prompt = build_proactive_prompt(filename, file_type, exif_meta)
+    
+    if extracted_text:
+        prompt += f"\n\n--- TEXTO EXTRAÍDO LOCALMENTE DEL DOCUMENTO ---\n{extracted_text}"
+        
     model_name = _select_model(file_type)
 
     for attempt in range(1, MAX_RETRIES_429 + 1):
-        uploaded_file = None
         try:
-            # Subir archivo
-            uploaded_file = client.files.upload(file=filepath)
-
-            # Esperar procesamiento
-            wait_count = 0
-            while uploaded_file.state.name == "PROCESSING":
-                time.sleep(3)
-                uploaded_file = client.files.get(name=uploaded_file.name)
-                wait_count += 1
-                if wait_count > 40:  # ~2 min timeout
-                    raise TimeoutError("El archivo excedió el tiempo de procesamiento en Gemini")
-
-            if uploaded_file.state.name == "FAILED":
-                raise ValueError(f"Gemini no pudo procesar el archivo: {uploaded_file.state.name}")
-
-            # Solicitar análisis con modelo dinámico
+            # Solicitar análisis con modelo dinámico utilizando únicamente el texto y metadatos
             response = client.models.generate_content(
                 model=model_name,
-                contents=[uploaded_file, prompt],
+                contents=[prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                 ),
@@ -1043,16 +1063,20 @@ def generate_report(patron_key: str, hallazgos: list):
 
 def _process_single_file(file_info: dict, client, tracker, all_metadata: list) -> str:
     """Procesa un archivo individual. Retorna: 'aprobado', 'rechazado', o 'error'."""
-    # Extraer metadatos locales
+    # Extraer metadatos y texto localmente (Ruta 2)
     exif_meta = None
+    extracted_text = ""
+    
     if file_info["type"] == "imagen":
         exif_meta = extract_image_exif(file_info["path"])
     elif file_info["type"] in ("audio", "video"):
-        exif_meta = extract_media_metadata(file_info["path"])
+        exif_meta = extract_mutagen_metadata(file_info["path"])
+    elif file_info["type"] == "documento":
+        extracted_text = extract_pdf_texto(file_info["path"])
 
-    # Analizar con Gemini (con reintentos automáticos ante 429)
+    # Analizar con Gemini (con reintentos automáticos ante 429) transmitiendo solo TEXTO
     analysis = analyze_with_gemini(
-        file_info["path"], file_info["type"], exif_meta, client
+        file_info["path"], file_info["type"], exif_meta, extracted_text, client
     )
 
     if not analysis:
