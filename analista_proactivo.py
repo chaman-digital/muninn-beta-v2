@@ -643,15 +643,21 @@ DETECCIÓN DE PATRONES — Analiza si este archivo contiene evidencia de CUALQUI
 
 1. DIFAMACIÓN Y FALSA DENUNCIA: La demandada fabrica hechos ante autoridades (policía, fiscalía, DIF) para perjudicar al padre. Incluye querellas por "sustracción" cuando ella misma estaba ausente.
 
-2. INACCIÓN EDUCATIVA: Ausentismo escolar reiterado, falta de supervisión en tareas, omisión de citas escolares, abandono de seguimiento académico de la hija.
+2. INACCIÓN EDUCATIVA: Ausentismo escolar reiterado, falta de supervisión en tareas, omisión de citas escolares, abandono de seguimiento académico de la hija. Rastrea proactivamente cualquier nexo entre juntas mencionadas con "Valeria" y la baja escolar.
 
-3. DESACATO AL RÉGIMEN DE VISITAS: Impedimento, boicot u obstrucción de la convivencia paterno-filial. Incluye cambio de domicilio no notificado, cancelación unilateral de visitas, inaccesibilidad deliberada.
+3. DESACATO AL RÉGIMEN DE VISITAS: Impedimento o boicot de la convivencia paterno-filial.
 
-4. VIOLENCIA VICARIA E INDUCCIÓN TESTIMONIAL (Art. 323 Séptimus CC CDMX): Actos deliberados para destruir el vínculo con el padre. Identifica frases despectivas que degraden la figura paterna. ANÁLISIS SOBRE ANÁLISIS: Documenta proactivamente todo patrón de COACCIÓN o INDUCCIÓN TESTIMONIAL (instrucciones directas de la madre a la menor sobre qué debe decir ante autoridades o el Juez).
+4. VIOLENCIA VICARIA, COACCIÓN E INDUCCIÓN TESTIMONIAL (Art. 323 Séptimus CC CDMX): ANÁLISIS SOBRE ANÁLISIS. Documenta cualquier aislamiento y maniobras para el descrédito del padre. Identifica proactivamente todo patrón de COACCIÓN directa dirigido a la INDUCCIÓN TESTIMONIAL (instrucciones de la madre a la menor sobre qué decir ante autoridades).
 
-5. ABANDONO MÉDICO/TERAPÉUTICO: Omisión de cuidados de salud, no dar seguimiento a tratamientos, ignorar señales de crisis emocional de la adolescente.
+5. HIGIENE Y LIFESTYLE: ANÁLISIS SOBRE ANÁLISIS. Al describir escenas en fotos o videos, rastrea activamente patrones de desatención, abandono de cuidado personal, vivienda insalubre o negligencia.
 
-6. VÍNCULO DE IDENTIDAD Y DESARTICULACIÓN DE COARTADA: Rastrea cualquier mención, metadata o imagen vinculada a "Hansel Oliver Rojas Figueroa". ANÁLISIS SOBRE ANÁLISIS: Identifica elementos que desmonten su fachada probatoria o alibi legal como 'asesor inmobiliario' y revelen el ocultamiento de convivencia/viajes.
+6. VÍNCULO DE IDENTIDAD Y DESARTICULACIÓN DE COARTADA: Desarticula el alias "asesor inmobiliario" vinculándolo de facto con "HANSEL OLIVER ROJAS FIGUEROA" para revelar el ocultamiento.
+
+7. FRAUDE DOMICILIAR: ANÁLISIS SOBRE ANÁLISIS. Cruza recibos de viajes de Uber, geolocalización GPS y elementos de video para probar que la demandada NO vive en el domicilio legal declarado.
+
+8. INTERFERENCIA PROXY: ANÁLISIS SOBRE ANÁLISIS. Estudia meticulosamente los metadatos y comunicaciones para detectar instancias donde la menor ('I.A.L.') responde mensajes como proxy, dictados directamente por la madre.
+
+9. CONTRADICCIONES TEMPORALES: Cruza fechas para detectar discrepancias entre denuncias pasadas (ej. Nov. 2022) y bitácoras de viajes de ocio o redes sociales de las mismas fechas.
 
 FILTRO ESTRATÉGICO OBLIGATORIO:
 Antes de registrar un hallazgo, evalúa: ¿Este hallazgo construye sustento legal eficiente para un juicio de Pérdida de Patria Potestad en la CDMX en 2026?
@@ -664,7 +670,7 @@ Responde ESTRICTAMENTE en JSON válido con esta estructura:
     "descripcion_escena": "Descripción objetiva y completa de lo que muestra el archivo. Para fotografías, describe personas, lugar, contexto, estado emocional. Para chats, identifica interlocutores y plataforma.",
     "texto_verbatim": "Transcripción literal completa del texto/audio visible o audible. Para audio, incluye marcas de tiempo (MM:SS). Para chats, mantén el formato de conversación. Si no aplica, null.",
     "fecha_visible": "Fecha y hora visible en el archivo. Formato: YYYY-MM-DD HH:MM. Si no hay fecha visible, null.",
-    "patrones_detectados": ["Lista de patrones detectados. Valores posibles: difamacion, inaccion_educativa, desacato_visitas, violencia_vicaria, abandono_medico, alienacion_parental, sin_relevancia_procesal"],
+    "patrones_detectados": ["Lista de patrones detectados. Valores posibles: difamacion, inaccion_educativa, desacato_visitas, violencia_vicaria, higiene_lifestyle, fraude_domiciliar, interferencia_proxy, desarticulacion_coartada, contradicciones_temporales, sin_relevancia_procesal"],
     "clasificacion_violencia": "Categoría del catálogo: Violencia Psicoemocional, Física, Patrimonial, Económica, Vicaria, Institucional, o Ninguna. Puede ser lista.",
     "valor_probatorio": "Evaluación de 1 a 10 del valor de esta evidencia para el juicio de Pérdida de Patria Potestad en CDMX 2026. 10 = prueba contundente.",
     "resumen_pericial": "Resumen en lenguaje judicial profesional (no jerga técnica). Máximo 3 oraciones.",
@@ -685,15 +691,19 @@ def _select_model(file_type: str) -> str:
 
 
 def analyze_with_gemini(filepath: str, file_type: str,
-                        exif_meta: dict | None, extracted_text: str, client) -> dict | None:
+                        wiki_path: str, client) -> dict | None:
     """Envía un análisis a Gemini para análisis forense proactivo bajo Ruta 2.
     Modelo seleccionado dinámicamente: Pro para audio/video, Flash para imagen/doc.
     Incluye manejo robusto de error 429 (Resource Exhausted) con reintentos."""
     filename = os.path.basename(filepath)
-    prompt = build_proactive_prompt(filename, file_type, exif_meta)
+    prompt = build_proactive_prompt(filename, file_type, None)
     
-    if extracted_text:
-        prompt += f"\n\n--- TEXTO EXTRAÍDO LOCALMENTE DEL DOCUMENTO ---\n{extracted_text}"
+    try:
+        with open(wiki_path, "r", encoding="utf-8") as f:
+            md_content = f.read()
+            prompt += f"\n\n--- WIKI MARKDOWN DEL ARCHIVO (METADATOS Y TEXTO) ---\n{md_content}"
+    except Exception as e:
+        log.error(f"Error leyendo archivo de wiki {wiki_path}: {e}")
         
     model_name = _select_model(file_type)
 
@@ -740,13 +750,7 @@ def analyze_with_gemini(filepath: str, file_type: str,
             else:
                 log.error(f"  Error procesando {filename} (intento {attempt}): {e}")
                 return None
-        finally:
-            # Limpiar archivo subido
-            if uploaded_file:
-                try:
-                    client.files.delete(name=uploaded_file.name)
-                except Exception:
-                    pass
+
 
     return None  # Agotados los reintentos
 
@@ -1074,9 +1078,34 @@ def _process_single_file(file_info: dict, client, tracker, all_metadata: list) -
     elif file_info["type"] == "documento":
         extracted_text = extract_pdf_texto(file_info["path"])
 
-    # Analizar con Gemini (con reintentos automáticos ante 429) transmitiendo solo TEXTO
+    # Wiki-Indexer: Guardar contenido localmente en markdown
+    wiki_dir = os.path.join(BASE_DIR, "wiki")
+    os.makedirs(wiki_dir, exist_ok=True)
+    
+    safe_hash = file_info.get("hash_sha256", "nohash")
+    wiki_path = os.path.join(wiki_dir, f"{safe_hash}_meta.md")
+    
+    try:
+        with open(wiki_path, "w", encoding="utf-8") as wf:
+            wf.write(f"# Archivo: {file_info['filename']}\n")
+            wf.write(f"- **Ruta original:** `{file_info['relative_path']}`\n")
+            wf.write(f"- **Tipo:** `{file_info['type']}`\n\n")
+            
+            if exif_meta:
+                wf.write("## Metadatos y Contexto Físico\n```json\n")
+                wf.write(json.dumps(exif_meta, ensure_ascii=False, indent=2))
+                wf.write("\n```\n\n")
+                
+            if extracted_text:
+                wf.write("## Texto Extraído Localmente (OCR/Texto Estático)\n")
+                wf.write(f"{extracted_text}\n\n")
+    except Exception as e:
+        log.error(f"Error generando archivo wiki local para {file_info['filename']}: {e}")
+        return "error"
+
+    # Analizar con Gemini (procesando el MD del Wiki-Indexer)
     analysis = analyze_with_gemini(
-        file_info["path"], file_info["type"], exif_meta, extracted_text, client
+        file_info["path"], file_info["type"], wiki_path, client
     )
 
     if not analysis:

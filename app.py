@@ -444,22 +444,13 @@ def semantic_search(query: str, classification_filter: str = None) -> pd.DataFra
         params.append(f"%{classification_filter}%")
 
     sql = f"""
-        SELECT
-            m.id,
-            m.raw_text,
-            m.visual_date,
-            m.legal_classification,
-            m.summary,
-            m.entities,
-            m.topics,
-            m.importance,
-            m.connections,
-            f.hash_sha256,
-            f.filename
-        FROM memories m
-        JOIN files f ON m.file_id = f.id
-        WHERE {where}
-        ORDER BY m.importance DESC, m.id DESC
+        SELECT m.id, m.raw_text, m.visual_date, m.legal_classification, 
+               m.summary, m.entities, m.topics, m.importance, m.connections, 
+               f.hash_sha256, f.filename 
+        FROM memories m 
+        JOIN files f ON m.file_id = f.id 
+        WHERE {where} 
+        ORDER BY m.importance DESC, m.id DESC 
         LIMIT 50
     """
     return run_query(sql, tuple(params))
@@ -506,7 +497,31 @@ with st.sidebar:
 
     st.markdown("---")
 
-
+    # ─────────────────────────────────────────────────
+    # MÉTRICAS GLOBALES EN SIDEBAR
+    # ─────────────────────────────────────────────────
+    stats = run_query("""
+        SELECT
+            (SELECT COUNT(*) FROM files) as total_archivos,
+            (SELECT COUNT(*) FROM memories) as total_memorias
+    """)
+    if not stats.empty:
+        row = stats.iloc[0]
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            st.markdown(f"""
+            <div class="metric-card" style="margin-bottom:16px;padding:12px;">
+                <div class="metric-value" style="font-size:1.4rem;">{int(row['total_archivos'])}</div>
+                <div class="metric-label" style="font-size:0.75rem;">Archivos Indexados</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col_m2:
+            st.markdown(f"""
+            <div class="metric-card" style="margin-bottom:16px;padding:12px;">
+                <div class="metric-value" style="font-size:1.4rem;">{int(row['total_memorias'])}</div>
+                <div class="metric-label" style="font-size:0.75rem;">Memorias Analizadas</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     st.markdown("""
     <div style="position:fixed;bottom:16px;left:16px;font-size:0.65rem;color:#ffffff;">
@@ -514,33 +529,6 @@ with st.sidebar:
         Citación Forense Activa
     </div>
     """, unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────────
-# MÉTRICAS GLOBALES
-# ─────────────────────────────────────────────────
-stats = run_query("""
-    SELECT
-        (SELECT COUNT(*) FROM files) as total_archivos,
-        (SELECT COUNT(*) FROM memories) as total_memorias
-""")
-if not stats.empty:
-    row = stats.iloc[0]
-    col_m1, col_m2 = st.columns(2)
-    with col_m1:
-        st.markdown(f"""
-        <div class="metric-card" style="margin-bottom:20px;padding:16px;">
-            <div class="metric-value" style="font-size:1.8rem;">{int(row['total_archivos'])}</div>
-            <div class="metric-label" style="font-size:0.85rem;">Archivos Indexados</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col_m2:
-        st.markdown(f"""
-        <div class="metric-card" style="margin-bottom:20px;padding:16px;">
-            <div class="metric-value" style="font-size:1.8rem;">{int(row['total_memorias'])}</div>
-            <div class="metric-label" style="font-size:0.85rem;">Memorias Analizadas</div>
-        </div>
-        """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════
 #  PÁGINA 1: BUSCADOR SEMÁNTICO
@@ -647,8 +635,17 @@ if "Buscador" in page:
                 elif ext in ['.mp4', '.mov']:
                     tipo_str = "1 video"
 
+                # Calcular conexiones
+                conexiones_count = 0
+                if row.get("connections"):
+                    try:
+                        conn_data = json.loads(row.get("connections", "{}"))
+                        conexiones_count = len(conn_data) if isinstance(conn_data, dict) else 1
+                    except Exception:
+                        conexiones_count = 1
+
                 card_html = (
-                    '<div class="forensic-card">'
+                    '<div class="forensic-card" style="margin-bottom:8px; border-bottom-left-radius:0; border-bottom-right-radius:0;">'
                     '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px;">'
                     '<div style="display:flex;align-items:center;gap:10px;">'
                     f'<span style="font-weight:800;font-size:0.95rem;color:var(--accent-cyan);">&#128197; {visual_date}</span>'
@@ -659,26 +656,30 @@ if "Buscador" in page:
                     f'<div style="font-size:0.82rem;color:var(--text-secondary);">'
                     f'&#128100; <strong>Personas:</strong> {entities if entities else "No identificadas"}'
                     '</div>'
-                    f'<div style="font-size:0.82rem;color:var(--accent-cyan);background:rgba(6,214,160,0.1);padding:4px 8px;border-radius:6px;font-weight:600;">'
-                    f'&#128193; 📁 {tipo_str}'
+                    f'<div style="font-size:0.82rem;color:var(--text-secondary);"><span style="color:var(--accent-cyan);font-weight:bold;">🔗 Archivos Ligados: {conexiones_count}</span> &nbsp;|&nbsp; '
+                    f'📁 {tipo_str}'
                     '</div>'
                     '</div>'
-                    f'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:10px;margin-bottom:10px;">'
+                    f'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:10px;margin-bottom:6px;">'
                     f'<div style="flex:1;min-width:200px;">{importance_html}</div>'
                     '</div>'
-                    '<details style="margin-top:10px;background:rgba(0,0,0,0.1);padding:10px;border-radius:6px;">'
-                    '<summary style="cursor:pointer; font-weight:600; color:var(--accent-cyan);outline:none;">&#9878;&#65039; Detalle de Hallazgo</summary>'
-                    '<div style="margin-top:10px; padding-left:10px; border-left:2px solid var(--accent-cyan);">'
-                    f'<div class="verbatim-quote">{raw}</div>'
-                    f'<p style="font-size:0.84rem;color:var(--text-secondary);margin:10px 0 6px;">'
-                    f'<strong>Razonamiento Jur&#237;dico:</strong> {summary}'
-                    '</p>'
-                    f'<div style="font-size:0.78rem;color:var(--accent-amber);font-weight:600;">&#9878;&#65039; Jurisprudencia CDMX 2026: {legal_ref}</div>'
-                    '</div>'
-                    '</details>'
                     '</div>'
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
+                
+                with st.expander("⚖️ Desplegar Citas y Razonamiento Jurídico Completo CDMX 2026"):
+                    st.markdown(f"""
+                    <div style="padding:12px; border-left:3px solid var(--accent-cyan); background:rgba(0,0,0,0.15); border-radius:6px;">
+                        <div class="verbatim-quote" style="margin-top:0;">{raw}</div>
+                        <p style="font-size:0.88rem;color:var(--text-primary);margin:16px 0 10px;line-height:1.6;">
+                            <strong>Razonamiento Jurí­dico:</strong><br><span style="color:var(--text-secondary);">{summary}</span>
+                        </p>
+                        <div style="font-size:0.85rem;color:var(--accent-amber);font-weight:600;margin-top:12px;padding:8px 12px;background:rgba(247,179,43,0.1);border-radius:6px;display:inline-block; border: 1px solid rgba(247,179,43,0.3);">
+                            &#9878;&#65039; Fundamento Legal CDMX 2026: {legal_ref}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
     else:
         # Show recent high-importance memories by default

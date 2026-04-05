@@ -99,3 +99,7 @@ metadata_multimodal.json
 *.swp
 *.swo
 *~
+.venv/
+muninn_memory.db
+*.m4a
+*.png
