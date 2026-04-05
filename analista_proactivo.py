@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ╔════════════════════════════════════════════════════════════════════╗
-║  ANALISTA PROACTIVO FORENSE — Muninn v2.0                        ║
+║  ANALISTA PROACTIVO FORENSE — MUNINN V2.2.1 (Pure Local Indexing)  ║
 ║                                                                    ║
 ║  Motor de Detección de Patrones con Gemini 1.5 Pro                ║
 ║  Protocolo: Lingüística Forense (texto verbatim, marcas de       ║
@@ -1143,7 +1143,7 @@ def _process_single_file(file_info: dict, client, tracker, all_metadata: list) -
     return "aprobado"
 
 
-def main():
+def run_analysis():
     """Ejecuta el pipeline completo del Analista Proactivo Forense.
     Protocolo de Ingesta Crítica V1.3:
       A. Texto/MD → B. PDF(<15MB) → C. Imágenes(×20) → D. Audios(×3) → E. Videos(×1)
@@ -1298,4 +1298,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_analysis()
