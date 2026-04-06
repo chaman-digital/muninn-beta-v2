@@ -14,9 +14,6 @@
 ## 3. Ausencia de Terapia Psiquiátrica y Evidencias de Cutting
 - **La Herida Piscológica:** Tras ser frecuentemente delegada y experimentar aislamiento socioafectivo y Violencia Económica encubierta, la menor reportó etapas depresivas con manifestaciones iniciales de 'cutting' o autolesiones referenciadas por orientadores de Queen Mary.
 - **Archivos Indexables de Vulnerabilidad:** En notas de voz generadas por un estado emocional alterado de I.A.L.:
-  - `[Es Un Sueño - IO.m4a]`
-  - `[Otro Sueño - IO.m4a]`
-  - `[Un Sueño - IO.m4a]`
   - `[Nota de voz.m4a]`
 Revelando su grado de perturbación durante estos vacíos terapéuticos, en los cuales la madre custodia optó por no brindarle ayuda ni contención formal psiquiátrica o psicológica.
 
