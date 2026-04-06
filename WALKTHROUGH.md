@@ -1,4 +1,4 @@
-# WALKTHROUGH - Snapshot V13.8 (Análisis Forense Masivo en Ejecución)
+# WALKTHROUGH - Snapshot V17.0 (Beta V2.3.1 Operativa - Minería Silenciosa en Marcha)
 
 ## Cambios Implementados
 - **Interfaz Bespoke (Nornas):** Se estabilizó `app.py` implementando una barra superior *sticky*, auto-colapso lateral en entornos Mobile (Safari iOS) y carga de componentes a través de llamadas asíncronas ligeras (`st.html`) lo que silenció los logs en terminal y redujo la carga de RAM.
