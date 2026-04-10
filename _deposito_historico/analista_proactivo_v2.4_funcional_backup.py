@@ -39,13 +39,6 @@ except ImportError:
     print("Error: Paquete 'ollama' no instalado. Ejecute: pip install ollama", flush=True)
     sys.exit(1)
 
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:
-    print("Error: Paquete 'google-genai' no instalado. Ejecute: pip install google-genai", flush=True)
-    sys.exit(1)
-
 import gc
 
 try:
@@ -118,11 +111,9 @@ TEXT_EXTS = {'.doc', '.docx'}
 EXCLUDED_EXTS = {'.txt', '.md', '.db', '.sql', '.py'}
 ALL_SUPPORTED = IMAGE_EXTS | AUDIO_EXTS | VIDEO_EXTS | DOC_EXTS | TEXT_EXTS
 
-# ── Protocolo de Ingesta Crítica V2.4B (Ollama Local + Gemini Vision) ──
-# Orden estricto: A. Imágenes (Gemini) → B. PDF → C. Textos → D. Audios → E. Videos (Ollama Local)
-SUB_BATCH_SIZE_IMAGES = 3       # Tamaño de lotes estricto para imágenes (evitar saturación API)
-SUB_BATCH_SIZE_DOCS = 3         # Lotes para PDF y Texto (.doc/docx)
-SUB_BATCH_SIZE_MEDIA = 1        # Archivo individual por lote para Audios y Videos
+# ── Protocolo de Ingesta Crítica V2.4 (Ollama Local, sin API, sin limitantes de peso) ──
+# Orden estricto: A. Textos (.doc, .docx) → B. PDF → C. Imágenes → D. Audios → E. Videos
+SUB_BATCH_SIZE = 10     # Tamaño de lotes estricto a 10 archivos
 
 # Modelos Ollama
 OLLAMA_MODEL = "gemma4:e4b"
@@ -504,19 +495,19 @@ def _classify_by_type(all_files: list[dict]) -> list[tuple[str, int, list[dict]]
         for sf in skipped_explicit:
             log.warning(f"    ▸ {sf['filename']} ({sf['size_bytes'] / (1024*1024):.1f} MB) — Sesión dedicada")
 
-    # Construir sub-lotes
+    # Construir sub-lotes de SUB_BATCH_SIZE
     sub_batches = []
     
-    def chunk_list(lst, prefix, batch_size):
-        for i in range(0, len(lst), batch_size):
-            chunk = lst[i:i + batch_size]
-            sub_batches.append((f"{prefix} [{i+1}-{i+len(chunk)}]", batch_size, chunk))
+    def chunk_list(lst, prefix):
+        for i in range(0, len(lst), SUB_BATCH_SIZE):
+            chunk = lst[i:i + SUB_BATCH_SIZE]
+            sub_batches.append((f"{prefix} [{i+1}-{i+len(chunk)}]", SUB_BATCH_SIZE, chunk))
             
-    chunk_list(images, "A. Imágenes", SUB_BATCH_SIZE_IMAGES)
-    chunk_list(docs, "B. PDF", SUB_BATCH_SIZE_DOCS)
-    chunk_list(textos, "C. Textos .doc/.docx", SUB_BATCH_SIZE_DOCS)
-    chunk_list(audios, "D. Audios", SUB_BATCH_SIZE_MEDIA)
-    chunk_list(videos, "E. Videos", SUB_BATCH_SIZE_MEDIA)
+    chunk_list(textos, "A. Textos .doc/.docx")
+    chunk_list(docs, "B. PDF")
+    chunk_list(images, "C. Imágenes")
+    chunk_list(audios, "D. Audios")
+    chunk_list(videos, "E. Videos")
 
     return sub_batches
 
@@ -714,72 +705,19 @@ Responde ESTRICTAMENTE en JSON válido con esta estructura:
 }}"""
 
 
-def synthesize_analyses(analyses: list[dict]) -> dict:
-    """Combina múltiples diagnósticos de Ollama provenientes de un solo archivo particionado en fragmentos."""
-    if len(analyses) == 1:
-        return analyses[0]
-        
-    merged = {
-        "descripcion_escena": "Análisis consolidado por fragmentos: ",
-        "texto_verbatim": "",
-        "fecha_visible": analyses[0].get("fecha_visible"),
-        "patrones_detectados": set(),
-        "clasificacion_violencia": set(),
-        "valor_probatorio": 0,
-        "resumen_pericial": "",
-        "personas_identificadas": set(),
-        "fundamento_legal": set(),
-        "conexiones": {},
-        "filtro_estrategico": "RECHAZADO"
-    }
-    
-    for a in analyses:
-        if a.get("descripcion_escena"):
-            merged["descripcion_escena"] += str(a["descripcion_escena"]) + " | "
-        if a.get("texto_verbatim"):
-            merged["texto_verbatim"] += str(a["texto_verbatim"]) + "\n...\n"
-        
-        # Merge de conjuntos
-        patrones = a.get("patrones_detectados", [])
-        if isinstance(patrones, str): patrones = [p.strip() for p in patrones.split(",")]
-        for p in patrones: merged["patrones_detectados"].add(p.strip())
-            
-        if a.get("clasificacion_violencia"):
-            for p in str(a["clasificacion_violencia"]).split(","): merged["clasificacion_violencia"].add(p.strip())
-            
-        val = int(a.get("valor_probatorio") or 0)
-        if val > merged["valor_probatorio"]:
-            merged["valor_probatorio"] = val
-            
-        if a.get("resumen_pericial"):
-            merged["resumen_pericial"] += str(a["resumen_pericial"]) + " "
-            
-        if a.get("personas_identificadas"):
-            for p in str(a["personas_identificadas"]).split(","): merged["personas_identificadas"].add(p.strip())
-            
-        if a.get("fundamento_legal"):
-            for p in str(a["fundamento_legal"]).split(","): merged["fundamento_legal"].add(p.strip())
-            
-        if "APROBADO" in str(a.get("filtro_estrategico", "")).upper():
-            merged["filtro_estrategico"] = "APROBADO"
-            
-    merged["patrones_detectados"] = [p for p in merged["patrones_detectados"] if p and p != "sin_relevancia_procesal"]
-    if not merged["patrones_detectados"]: merged["patrones_detectados"] = ["sin_relevancia_procesal"]
-    merged["clasificacion_violencia"] = ", ".join([p for p in merged["clasificacion_violencia"] if p and p != "Ninguna"])
-    merged["personas_identificadas"] = ", ".join([p for p in merged["personas_identificadas"] if p])
-    merged["fundamento_legal"] = ", ".join([p for p in merged["fundamento_legal"] if p and p != "null"])
-    
-    return merged
-
-
 def analyze_with_ollama(filepath: str, file_type: str,
-                        md_content: str) -> dict | None:
+                        wiki_path: str) -> dict | None:
     """Envía un análisis a Ollama de forma local.
     Incluye protección de RAM con keep_alive=0 y captura de errores."""
     filename = os.path.basename(filepath)
     prompt = build_proactive_prompt(filename, file_type, None)
     
-    prompt += f"\n\n--- CONTENIDO DEL ARCHIVO (METADATOS Y TEXTO) ---\n{md_content}"
+    try:
+        with open(wiki_path, "r", encoding="utf-8") as f:
+            md_content = f.read()
+            prompt += f"\n\n--- CONTENIDO DEL ARCHIVO (METADATOS Y TEXTO) ---\n{md_content}"
+    except Exception as e:
+        log.error(f"Error leyendo archivo local de contenido {wiki_path}: {e}")
         
     try:
         response = ollama.generate(
@@ -816,77 +754,6 @@ def analyze_with_ollama(filepath: str, file_type: str,
             sys.exit(1)
         log.error(f"  Error procesando {filename} con Ollama: {e}")
         return None
-
-def analyze_with_gemini_vision(filepath: str, file_type: str, md_content: str) -> dict | None:
-    """Envía un análisis visual a Gemini Flash de forma segura con reintentos controlados."""
-    filename = os.path.basename(filepath)
-    prompt = build_proactive_prompt(filename, file_type, None)
-    prompt += f"\n\n--- INSTRUCCIÓN ADICIONAL PARA IA VISUAL ---\nIgnora rostros privados si no son vitales para identificar ubicaciones. Lee toda letra, número o ticket visible."
-    
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        log.error("FATAL: GEMINI_API_KEY no detectada en entorno. Abortando proceso visual.")
-        sys.exit(1)
-        
-    client = genai.Client(api_key=api_key)
-    
-    # Manejo de reintentos y carga estratégica
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            pil_img = Image.open(filepath)
-            
-            # WORKAROUND: La API de Gemini intenta enviar el nombre del archivo en headers HTTP.
-            # Si la ruta contiene acentos (ej. "PAGOS PENSIÓN" o "Raíz"), httpx falla con error ASCII.
-            # Sobrescribimos el nombre interno en memoria con un string seguro en ASCII puro.
-            if hasattr(pil_img, 'filename'):
-                pil_img.filename = "evidencia_limpia.jpg"
-                
-            log.info(f"    Invocando Gemini Flash para {filename} (Intento {attempt+1}/{max_retries})...")
-            
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[
-                    pil_img,
-                    prompt
-                ],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0
-                )
-            )
-            
-            text = response.text.replace('```json', '').replace('```', '').strip()
-            data = json.loads(text)
-
-            for key in ("clasificacion_violencia", "personas_identificadas", "patrones_detectados"):
-                if isinstance(data.get(key), list):
-                    if key == "patrones_detectados":
-                        continue
-                    data[key] = ", ".join(str(x) for x in data[key])
-            if isinstance(data.get("conexiones"), dict):
-                data["conexiones"] = json.dumps(data["conexiones"], ensure_ascii=False)
-                
-            # Éxito: aplicamos la pausa de carga por archivo nuevo (120s a petición)
-            log.success(f"Extracción visual profunda de {filename} completada exitosamente.")
-            log.info("Pausa estratégica: Guardando 120 segundos para estabilizar la cuota API...")
-            time.sleep(120)
-            return data
-            
-        except json.JSONDecodeError as e:
-            log.error(f"  JSON inválido devuelto por Gemini para {filename}: {e}")
-            return None
-        except Exception as e:
-            log.warning(f"Error con Gemini (Intento {attempt+1}): {str(e)}")
-            if attempt < max_retries - 1:
-                log.info(f"Pausa mandatoria de 120s por error API en {filename}...")
-                time.sleep(120)
-            else:
-                log.error(f"Descartando archivo {filename} tras {max_retries} intentos por error de API.")
-                return None
-    return None
-
-
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1262,46 +1129,18 @@ def _process_single_file(file_info: dict, tracker, all_metadata: list) -> str:
         log.error(f"Error generando archivo wiki local para {file_info['filename']}: {e}")
         return "error"
 
-    # LÓGICA DE FRAGMENTACIÓN (CHUNKING) V2.4
-    CHUNK_LIMIT = 15000
-    text_chunks = []
-    if extracted_text and len(extracted_text) > CHUNK_LIMIT:
-        log.info(f"    Archivo pesado detectado ({len(extracted_text)} caracteres). Iniciando Chunking...")
-        for i in range(0, len(extracted_text), CHUNK_LIMIT):
-            chunk = extracted_text[i:i + CHUNK_LIMIT]
-            text_chunks.append(chunk)
-    else:
-        text_chunks.append(extracted_text)
-        
-    all_analyses = []
-    for idx, chunk in enumerate(text_chunks, 1):
-        if len(text_chunks) > 1:
-            log.info(f"    Procesando fragmento {idx}/{len(text_chunks)}...")
-        
-        md_content = "".join(base_content[:3])
-        if exif_meta:
-            md_content += json.dumps(exif_meta, ensure_ascii=False) + "\n"
-        md_content += f"\n[FRAGMENTO {idx} / {len(text_chunks)}]:\n{chunk}"
-        
-        if file_info["type"] == "imagen":
-            analysis = analyze_with_gemini_vision(file_info["path"], file_info["type"], md_content)
-        else:
-            analysis = analyze_with_ollama(file_info["path"], file_info["type"], md_content)
-            
-        if analysis:
-            all_analyses.append(analysis)
+    # Analizar con Ollama (procesando el MD del Wiki-Indexer)
+    analysis = analyze_with_ollama(
+        file_info["path"], file_info["type"], wiki_path
+    )
 
-    if not all_analyses:
+    if not analysis:
         return "error"
         
-    analysis = synthesize_analyses(all_analyses)
-        
-    # Escribir análisis consolidado directo al .md
+    # Escribir análisis completo directo al .md
     try:
         with open(wiki_path, "a", encoding="utf-8") as wf:
             wf.write("## Análisis Forense Proactivo (Ollama Local)\n")
-            if len(text_chunks) > 1:
-                wf.write(f"*(Documento de gran volumen: Sintetizado a partir de {len(text_chunks)} fragmentos)*\n\n")
             wf.write("```json\n")
             wf.write(json.dumps(analysis, ensure_ascii=False, indent=2))
             wf.write("\n```\n\n")
@@ -1309,8 +1148,9 @@ def _process_single_file(file_info: dict, tracker, all_metadata: list) -> str:
             wf.write(f"- Clasificación Violencia: {analysis.get('clasificacion_violencia')}\n")
             wf.write(f"- Valor Probatorio: {analysis.get('valor_probatorio')}/10\n")
             wf.write(f"- Estrategia: {analysis.get('filtro_estrategico')}\n")
+            wf.write(f"- Resumen: {analysis.get('resumen_pericial')}\n")
     except Exception as e:
-        log.error(f"No se pudo guardar la inferencia consolidada de Ollama en el MD del wiki: {e}")
+        log.error(f"No se pudo guardar la inferencia de Ollama en el MD del wiki: {e}")
 
     filtro = analysis.get("filtro_estrategico", "")
 
@@ -1444,11 +1284,10 @@ def run_analysis():
         # Liberación estricta de memoria al terminar el lote
         gc.collect()
 
-        # Pausa inter-lote para recuperación de recursos y enfriamiento de API
+        # Pausa inter-lote para recuperación de recursos
         if lote_num < total_sub_batches:
-            current_pause = 180 if "Imágenes" in lote_name else 20
-            log.info(f"  Pausa inter-lote de {current_pause}s para estabilización RAM/API...")
-            time.sleep(current_pause)
+            log.info(f"  Pausa inter-lote de {BATCH_PAUSE}s para recuperación de recursos...")
+            time.sleep(BATCH_PAUSE)
 
     # ── Guardar metadata final ──
     save_metadata_json(all_metadata)
