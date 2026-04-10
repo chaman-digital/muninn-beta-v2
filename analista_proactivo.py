@@ -636,25 +636,31 @@ def build_proactive_prompt(filename: str, file_type: str,
         type_instructions = """
 INSTRUCCIONES PARA IMAGEN:
 - Transcribe TODO el texto visible literalmente (OCR completo: mensajes, fechas, nombres, estados de lectura).
+- REGLA ABSOLUTA: Entregar un `texto_verbatim` 100% íntegro. Cero resúmenes, cero extracciones parciales. Todo texto aparecerá íntegramente.
 - Si es captura de chat: identifica remitente, destinatario, plataforma (WhatsApp, iMessage, etc.) y hora visible.
-- Para los análisis de capturas de pantalla con mensajes, prioriza la fecha impresa en el texto de la imagen sobre la fecha en que se realizó la captura de pantalla sin eliminar los datos EXIF.
-- Describe la escena fotográfica si NO es un chat: personas, entorno, contexto visible, estado emocional aparente.
+- Para los análisis de capturas de pantalla con mensajes, prioriza la fecha impresa sobre la fecha de la captura sin eliminar metadatos.
+- Describe la escena fotográfica si NO es un chat: personas, entorno, deterioro, suciedad, contexto visible.
 - Identifica SELLOS, FIRMAS, logotipos oficiales si los hay."""
     elif file_type == "audio":
         type_instructions = """
 INSTRUCCIONES PARA AUDIO:
 - Transcribe VERBATIM con marcas de tiempo (MM:SS) y diarización (quién habla).
+- Nombres conocidos para Diarización (prioriza identificarlos): René, Viridiana, IO (Hija), Valeria Juárez, Carlos Alberto López.
+- REGLA ABSOLUTA: Entregar un `texto_verbatim` 100% íntegro de la conversación. Cero resúmenes, cero omisiones de diálogo.
 - Identifica tono emocional: llanto, gritos, sarcasmo, amenazas veladas.
 - Cita el nombre del archivo en la narrativa."""
     elif file_type == "video":
         type_instructions = """
 INSTRUCCIONES PARA VIDEO:
-- Describe la escena visual con detalle y transcribe el audio VERBATIM con marcas de tiempo.
+- Describe la escena visual con detalle (higiene, abandono, contexto) y transcribe el audio VERBATIM con marcas de tiempo.
+- Nombres conocidos para Diarización: René, Viridiana, IO (Hija), Valeria Juárez, Carlos Alberto López.
+- REGLA ABSOLUTA: Entregar un `texto_verbatim` 100% íntegro del diálogo. Cero resúmenes, cero recortes parciales.
 - Identifica ubicación, personas presentes, estado emocional."""
     elif file_type == "documento":
         type_instructions = """
 INSTRUCCIONES PARA DOCUMENTO PDF:
 - Extrae texto con jerarquía visual: encabezados, sellos, firmas, membretes.
+- REGLA ABSOLUTA: Entregar un `texto_verbatim` 100% íntegro de TODO el contenido del PDF. Cero resúmenes, cero exclusiones.
 - Identifica la naturaleza del documento (oficio, demanda, acuse, recibo, etc.).
 - Registra toda fecha y número de expediente visible."""
 
@@ -817,11 +823,16 @@ def analyze_with_ollama(filepath: str, file_type: str,
         log.error(f"  Error procesando {filename} con Ollama: {e}")
         return None
 
-def analyze_with_gemini_vision(filepath: str, file_type: str, md_content: str) -> dict | None:
-    """Envía un análisis visual a Gemini Flash de forma segura con reintentos controlados."""
+def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: str) -> dict | None:
+    """Envía un análisis multimodal a Gemini Flash de forma segura usando API de subida."""
+    import tempfile
+    import shutil
+    
     filename = os.path.basename(filepath)
     prompt = build_proactive_prompt(filename, file_type, None)
-    prompt += f"\n\n--- INSTRUCCIÓN ADICIONAL PARA IA VISUAL ---\nIgnora rostros privados si no son vitales para identificar ubicaciones. Lee toda letra, número o ticket visible."
+    
+    if file_type == "imagen":
+        prompt += f"\n\n--- INSTRUCCIÓN ADICIONAL PARA IA VISUAL ---\nIgnora rostros privados si no son vitales para identificar ubicaciones. Lee toda letra, número o ticket visible."
     
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -834,20 +845,30 @@ def analyze_with_gemini_vision(filepath: str, file_type: str, md_content: str) -
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            pil_img = Image.open(filepath)
+            # WORKAROUND ASCII: Si la ruta original contiene acentos, httpx fallará en los headers al subirlo.
+            # Copiamos temporalmente a ruta ASCII pura.
+            ext = os.path.splitext(filepath)[1]
+            temp_path = os.path.join(tempfile.gettempdir(), f"evidencia_multimodal_limpia{ext}")
+            shutil.copy2(filepath, temp_path)
             
-            # WORKAROUND: La API de Gemini intenta enviar el nombre del archivo en headers HTTP.
-            # Si la ruta contiene acentos (ej. "PAGOS PENSIÓN" o "Raíz"), httpx falla con error ASCII.
-            # Sobrescribimos el nombre interno en memoria con un string seguro en ASCII puro.
-            if hasattr(pil_img, 'filename'):
-                pil_img.filename = "evidencia_limpia.jpg"
+            log.info(f"    Subiendo media a Google Cloud para {filename} (Intento {attempt+1}/{max_retries})...")
+            uploaded_file = client.files.upload(file=temp_path)
+            
+            # Polling si el archivo requiere procesamiento (ej. videos o audios pesados)
+            while uploaded_file.state.name == "PROCESSING":
+                log.info(f"    Google está procesando el archivo internamente, esperando 10s...")
+                time.sleep(10)
+                uploaded_file = client.files.get(name=uploaded_file.name)
                 
-            log.info(f"    Invocando Gemini Flash para {filename} (Intento {attempt+1}/{max_retries})...")
+            if uploaded_file.state.name == "FAILED":
+                raise Exception("El servidor de Google falló al procesar el archivo.")
+                
+            log.info(f"    Invocando Gemini Flash para generar análisis multimodal de {filename}...")
             
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=[
-                    pil_img,
+                    uploaded_file,
                     prompt
                 ],
                 config=types.GenerateContentConfig(
@@ -867,10 +888,24 @@ def analyze_with_gemini_vision(filepath: str, file_type: str, md_content: str) -
             if isinstance(data.get("conexiones"), dict):
                 data["conexiones"] = json.dumps(data["conexiones"], ensure_ascii=False)
                 
-            # Éxito: aplicamos la pausa de carga por archivo nuevo (120s a petición)
-            log.success(f"Extracción visual profunda de {filename} completada exitosamente.")
-            log.info("Pausa estratégica: Guardando 120 segundos para estabilizar la cuota API...")
-            time.sleep(120)
+            log.success(f"Extracción multimodal de {filename} completada exitosamente.")
+            
+            # Limpieza Forense (Eliminar archivo de servidores remotos)
+            try:
+                client.files.delete(name=uploaded_file.name)
+            except Exception:
+                pass
+                
+            # Pausa ajustada para Pay-As-You-Go
+            log.info("Pausa estratégica: Guardando 15 segundos para estabilizar la cuota API...")
+            time.sleep(15)
+            
+            # Limpiar archivo temporal
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+                
             return data
             
         except json.JSONDecodeError as e:
@@ -879,8 +914,8 @@ def analyze_with_gemini_vision(filepath: str, file_type: str, md_content: str) -
         except Exception as e:
             log.warning(f"Error con Gemini (Intento {attempt+1}): {str(e)}")
             if attempt < max_retries - 1:
-                log.info(f"Pausa mandatoria de 120s por error API en {filename}...")
-                time.sleep(120)
+                log.info(f"Pausa mandatoria de 60s por error API en {filename}...")
+                time.sleep(60)
             else:
                 log.error(f"Descartando archivo {filename} tras {max_retries} intentos por error de API.")
                 return None
@@ -1283,8 +1318,8 @@ def _process_single_file(file_info: dict, tracker, all_metadata: list) -> str:
             md_content += json.dumps(exif_meta, ensure_ascii=False) + "\n"
         md_content += f"\n[FRAGMENTO {idx} / {len(text_chunks)}]:\n{chunk}"
         
-        if file_info["type"] == "imagen":
-            analysis = analyze_with_gemini_vision(file_info["path"], file_info["type"], md_content)
+        if file_info["type"] in ("imagen", "audio", "video", "documento"):
+            analysis = analyze_with_gemini_multimodal(file_info["path"], file_info["type"], md_content)
         else:
             analysis = analyze_with_ollama(file_info["path"], file_info["type"], md_content)
             
@@ -1446,7 +1481,7 @@ def run_analysis():
 
         # Pausa inter-lote para recuperación de recursos y enfriamiento de API
         if lote_num < total_sub_batches:
-            current_pause = 180 if "Imágenes" in lote_name else 20
+            current_pause = 30
             log.info(f"  Pausa inter-lote de {current_pause}s para estabilización RAM/API...")
             time.sleep(current_pause)
 
