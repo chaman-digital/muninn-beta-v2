@@ -101,12 +101,11 @@ BATCH_PRIORITY_ORDER = [
     ("PAGOS PENSIÓN", os.path.join(BASE_DIR, "PAGOS PENSIÓN"), True),
     ("VLV", os.path.join(BASE_DIR, "VLV"), True),
     ("UVM / Queen Mary", os.path.join(BASE_DIR, "Documentos IO", "IO UVM"), True),
-    ("Legislación", os.path.join(BASE_DIR, "legislacion"), True),
     ("Grabaciones de Audio", os.path.join(BASE_DIR, "grabaciones de audio"), True),
 ]
 
-# Archivos que se saltan en el escaneo automático (serán analizados en sesión dedicada)
-SKIP_FILES = set()
+# Archivos que se saltan en el escaneo automático (serán analizados en sesión dedicada o son referencia)
+SKIP_FILES = {"CC_CDMX.pdf", "CP_CDMX.pdf", "LGDNNA.pdf"}
 
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.heic'}
 AUDIO_EXTS = {'.m4a', '.mp3'}
