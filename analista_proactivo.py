@@ -891,7 +891,15 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
             if "{" in text and "}" in text:
                 text = text[text.find('{'):text.rfind('}')+1]
                 
-            data = json.loads(text)
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as e:
+                if "Extra data" in str(e):
+                    # Si hay datos basura después del JSON válido, cortar en la posición exacta
+                    text = text[:e.pos].strip()
+                    data = json.loads(text)
+                else:
+                    raise e
             
             # Si Gemini devuelve una lista en lugar de un objeto, tomar el primer elemento
             if isinstance(data, list):
@@ -1315,16 +1323,20 @@ def _process_single_file(file_info: dict, tracker, all_metadata: list) -> str:
         log.error(f"Error generando archivo wiki local para {file_info['filename']}: {e}")
         return "error"
 
-    # LÓGICA DE FRAGMENTACIÓN (CHUNKING) V2.4
+    # LÓGICA DE FRAGMENTACIÓN (CHUNKING) V2.4 / V17.4
     CHUNK_LIMIT = 15000
     text_chunks = []
-    if extracted_text and len(extracted_text) > CHUNK_LIMIT:
-        log.info(f"    Archivo pesado detectado ({len(extracted_text)} caracteres). Iniciando Chunking...")
+    
+    # Si va para Gemini (imagen, audio, video, documento), NO hacer chunking. Gemini asimila archivos enteros nativamente.
+    is_gemini_target = file_info["type"] in ("imagen", "audio", "video", "documento")
+    
+    if not is_gemini_target and extracted_text and len(extracted_text) > CHUNK_LIMIT:
+        log.info(f"    Archivo de texto pesado ({len(extracted_text)} caracteres). Iniciando Chunking para Ollama local...")
         for i in range(0, len(extracted_text), CHUNK_LIMIT):
             chunk = extracted_text[i:i + CHUNK_LIMIT]
             text_chunks.append(chunk)
     else:
-        text_chunks.append(extracted_text)
+        text_chunks.append(extracted_text if extracted_text else "")
         
     all_analyses = []
     for idx, chunk in enumerate(text_chunks, 1):
