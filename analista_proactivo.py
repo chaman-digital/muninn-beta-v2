@@ -850,32 +850,41 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
             temp_path = os.path.join(tempfile.gettempdir(), f"evidencia_multimodal_limpia{ext}")
             shutil.copy2(filepath, temp_path)
             
-            log.info(f"    Subiendo media a Google Cloud para {filename} (Intento {attempt+1}/{max_retries})...")
-            uploaded_file = client.files.upload(file=temp_path)
-            
-            # Polling si el archivo requiere procesamiento (ej. videos o audios pesados)
-            while uploaded_file.state.name == "PROCESSING":
-                log.info(f"    Google está procesando el archivo internamente, esperando 10s...")
-                time.sleep(10)
-                uploaded_file = client.files.get(name=uploaded_file.name)
+            uploaded_file = None
+            try:
+                log.info(f"    Subiendo media a Google Cloud para {filename} (Intento {attempt+1}/{max_retries})...")
+                uploaded_file = client.files.upload(file=temp_path)
                 
-            if uploaded_file.state.name == "FAILED":
-                raise Exception("El servidor de Google falló al procesar el archivo.")
+                # Polling si el archivo requiere procesamiento (ej. videos o audios pesados)
+                while uploaded_file.state.name == "PROCESSING":
+                    log.info(f"    Google está procesando el archivo internamente, esperando 10s...")
+                    time.sleep(10)
+                    uploaded_file = client.files.get(name=uploaded_file.name)
+                    
+                if uploaded_file.state.name == "FAILED":
+                    raise Exception("El servidor de Google falló al procesar el archivo.")
+                    
+                log.info(f"    Invocando Gemini Flash para generar análisis multimodal de {filename}...")
                 
-            log.info(f"    Invocando Gemini Flash para generar análisis multimodal de {filename}...")
-            
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[
-                    uploaded_file,
-                    prompt
-                ],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=[
+                        uploaded_file,
+                        prompt
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.0
+                    )
                 )
-            )
-            
+            finally:
+                # Limpieza Forense GARANTIZADA (Eliminar archivo de servidores remotos para no ahogar la cuota de 20GB)
+                if uploaded_file:
+                    try:
+                        client.files.delete(name=uploaded_file.name)
+                    except Exception:
+                        pass
+
             text = response.text.replace('```json', '').replace('```', '').strip()
             data = json.loads(text)
 
@@ -888,12 +897,6 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
                 data["conexiones"] = json.dumps(data["conexiones"], ensure_ascii=False)
                 
             log.success(f"Extracción multimodal de {filename} completada exitosamente.")
-            
-            # Limpieza Forense (Eliminar archivo de servidores remotos)
-            try:
-                client.files.delete(name=uploaded_file.name)
-            except Exception:
-                pass
                 
             # Pausa ajustada para Pay-As-You-Go
             log.info("Pausa estratégica: Guardando 15 segundos para estabilizar la cuota API...")
