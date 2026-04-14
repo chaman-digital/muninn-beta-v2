@@ -886,7 +886,19 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
                         pass
 
             text = response.text.replace('```json', '').replace('```', '').strip()
+            
+            # Limpieza cruda de JSON
+            if "{" in text and "}" in text:
+                text = text[text.find('{'):text.rfind('}')+1]
+                
             data = json.loads(text)
+            
+            # Si Gemini devuelve una lista en lugar de un objeto, tomar el primer elemento
+            if isinstance(data, list):
+                if len(data) > 0:
+                    data = data[0]
+                else:
+                    data = {}
 
             for key in ("clasificacion_violencia", "personas_identificadas", "patrones_detectados"):
                 if isinstance(data.get(key), list):
@@ -911,8 +923,12 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
             return data
             
         except json.JSONDecodeError as e:
-            log.error(f"  JSON inválido devuelto por Gemini para {filename}: {e}")
-            return None
+            log.warning(f"  JSON inválido devuelto por Gemini para {filename}: {e}. (Intento {attempt+1}/{max_retries})")
+            if attempt < max_retries - 1:
+                time.sleep(10)
+            else:
+                log.error(f"Descartando archivo {filename} tras {max_retries} intentos por error de JSON.")
+                return None
         except Exception as e:
             log.warning(f"Error con Gemini (Intento {attempt+1}): {str(e)}")
             if attempt < max_retries - 1:
