@@ -716,7 +716,11 @@ Responde ESTRICTAMENTE en JSON válido con esta estructura:
     "fundamento_legal": "Si tiene relevancia, cita la ley o artículo aplicable del Código Civil CDMX, LGDNNA, o LGAMVLV. Si no aplica, null.",
     "conexiones": "Vínculos con otros hechos del expediente o patrones previos. Objeto JSON.",
     "filtro_estrategico": "APROBADO si construye sustento legal para CDMX 2026, RECHAZADO si es irrelevante. Justifica en una oración."
-}}"""
+}}
+
+--- IMPORTANTE: TEXTO PRE-EXTRAÍDO / METADATOS COMPLEMENTARIOS ---
+{md_content if md_content else "No hay contexto complementario provisto."}
+"""
 
 
 def synthesize_analyses(analyses: list[dict]) -> dict:
@@ -866,35 +870,43 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
                     
                 log.info(f"    Invocando Gemini Flash para generar análisis multimodal de {filename}...")
                 
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=[
-                        uploaded_file,
-                        prompt
-                    ],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.0,
-                        safety_settings=[
-                            types.SafetySetting(
-                                category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
-                            types.SafetySetting(
-                                category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
-                            types.SafetySetting(
-                                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
-                            types.SafetySetting(
-                                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                                threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                            )
-                        ]
+                try:
+                    response = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=[
+                            uploaded_file,
+                            prompt
+                        ],
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.0,
+                            safety_settings=[
+                                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE)
+                            ]
+                        )
                     )
-                )
+                except Exception as eval_e:
+                    if "400" in str(eval_e) or "INVALID_ARGUMENT" in str(eval_e):
+                        log.warning(f"  El archivo {filename} es demasiado masivo o complejo para la API visual (Error 400). Intentando fallback nativo de Solo-Texto...")
+                        response = client.models.generate_content(
+                            model='gemini-2.5-flash',
+                            contents=[prompt],
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                temperature=0.0,
+                                safety_settings=[
+                                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                                    types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE)
+                                ]
+                            )
+                        )
+                    else:
+                        raise eval_e
             finally:
                 # Limpieza Forense GARANTIZADA (Eliminar archivo de servidores remotos para no ahogar la cuota de 20GB)
                 if uploaded_file:
