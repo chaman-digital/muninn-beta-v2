@@ -615,7 +615,7 @@ def filter_batch(files: list[dict], db_hashes: set, proactive_hashes: set) -> li
 # ═══════════════════════════════════════════════════════════════
 
 def build_proactive_prompt(filename: str, file_type: str,
-                           exif_meta: dict | None = None) -> str:
+                           exif_meta: dict | None = None, md_content: str | None = None) -> str:
     """Construye el prompt especializado en detección de patrones para CDMX 2026."""
 
     metadata_section = ""
@@ -832,7 +832,7 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
     import shutil
     
     filename = os.path.basename(filepath)
-    prompt = build_proactive_prompt(filename, file_type, None)
+    prompt = build_proactive_prompt(filename, file_type, None, md_content)
     
     if file_type == "imagen":
         prompt += f"\n\n--- INSTRUCCIÓN ADICIONAL PARA IA VISUAL ---\nIgnora rostros privados si no son vitales para identificar ubicaciones. Lee toda letra, número o ticket visible."
