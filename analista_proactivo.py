@@ -915,6 +915,9 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
                     except Exception:
                         pass
 
+            if not getattr(response, "text", None):
+                raise Exception("Respuesta vacía o bloqueada por la API de Gemini (NoneType en text).")
+            
             text = response.text.replace('```json', '').replace('```', '').strip()
             
             # Limpieza cruda de JSON
@@ -922,12 +925,12 @@ def analyze_with_gemini_multimodal(filepath: str, file_type: str, md_content: st
                 text = text[text.find('{'):text.rfind('}')+1]
                 
             try:
-                data = json.loads(text)
+                data = json.loads(text, strict=False)
             except json.JSONDecodeError as e:
                 if "Extra data" in str(e):
                     # Si hay datos basura después del JSON válido, cortar en la posición exacta
                     text = text[:e.pos].strip()
-                    data = json.loads(text)
+                    data = json.loads(text, strict=False)
                 else:
                     raise e
             
